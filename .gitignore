@@ -6,3 +6,4 @@ build/
 *.img
 tools/testapps/hello_elf
 tools/testapps/hello_pe.exe
+__pycache__/
