@@ -15,6 +15,13 @@ int loader_elf(struct process *p, const u8 *image, u32 size);
 int loader_pe(struct process *p, const u8 *image, u32 size);
 int loader_lash(struct process *p, const u8 *image, u32 size);
 
+/* ELF64 program header, shared with the process layer so the auxv can be
+   filled in without duplicating the layout. */
+struct elf64_phdr {
+    u32 type, flags;
+    u64 offset, vaddr, paddr, filesz, memsz, align;
+} __attribute__((packed));
+
 /* Image format classes returned by image_detect(). */
 #define IMG_UNKNOWN  (-1)
 #define IMG_ELF       0

@@ -7,3 +7,6 @@ build/
 tools/testapps/hello_elf
 tools/testapps/hello_pe.exe
 __pycache__/
+tools/testapps/*.lashbin
+tools/testapps/hello.lash
+tools/testapps/hello.appimage

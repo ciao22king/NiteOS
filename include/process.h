@@ -20,6 +20,10 @@ struct process {
     struct addr_space *space;
     u64   entry;
     u64   user_stack_top;
+    /* Load bias and program headers, published to the auxv. */
+    u64   base;
+    u64   phdr;
+    u32   phnum;
 
     /* Program break for brk/mmap. */
     u64   brk_base;
@@ -51,6 +55,13 @@ int   process_exec_image(const char *name, const u8 *image, u32 size,
 /* Called from the syscall layer. */
 void  process_exit(int code) __attribute__((noreturn));
 isize process_sbrk(isize increment);
+int   process_handle_fault(u64 cr2);
+u64   process_mmap(u64 addr, u64 len, u64 prot, int flags);
+/* Reserve the virtual range an ET_DYN image needs; returns the chosen base. */
+u64   process_reserve_image(struct process *p, u64 vbase, u64 span);
+int   process_mprotect(u64 addr, u64 len, u64 prot);
+int   process_arch_prctl(int code, u64 addr);
+u64   process_getrandom(void *buf, u32 len);
 u64   process_write_args(char *buf, u32 len);
 
 /* Entry trampoline: the loaders set up the frame then jump here. */

@@ -43,7 +43,34 @@ u32  pit_get_frequency(void);
 void panic(const char *fmt, ...) __attribute__((noreturn));
 void dump_registers(struct registers *r);
 
+/* Provided by the process layer: try to satisfy a user-space page fault. */
+int process_handle_fault(u64 cr2);
+
 /* User mode (ring 3) entry: builds an iretq frame and drops privilege. */
 void usermode_enter(u64 entry, u64 user_rsp) __attribute__((noreturn));
+
+/* MSR access */
+static inline u64 rdmsr(u32 msr)
+{
+    u32 lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((u64)hi << 32) | lo;
+}
+
+static inline void wrmsr(u32 msr, u64 value)
+{
+    __asm__ volatile("wrmsr" ::"c"(msr), "a"((u32)value), "d"((u32)(value >> 32)));
+}
+
+#define MSR_EFER   0xC0000080
+#define MSR_STAR   0xC0000081
+#define MSR_LSTAR  0xC0000082
+#define MSR_FMASK  0xC0000084
+#define MSR_FS_BASE 0xC0000100
+#define MSR_GS_BASE 0xC0000101
+#define EFER_SCE   (1ULL << 0)
+
+/* Enable the `syscall`/`sysret` pair and point it at the kernel entry stub. */
+void syscall_msr_init(void);
 
 #endif

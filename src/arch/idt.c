@@ -74,7 +74,18 @@ void isr_dispatch(struct registers *r)
         if (r->int_no == 14) {
             u64 cr2;
             __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            /* User-space faults may be a legitimate stack growth; let the VM
+               layer try to satisfy it before declaring a panic. */
+            if ((r->cs & 3) == 3 && (r->err_code & 0x4) == 0) {
+                if (process_handle_fault(cr2) == 0) return;
+            }
             klog_err("  faulting address (CR2) = %p", (void *)cr2);
+            if ((r->cs & 3) == 3 && r->rsp) {
+                /* The saved RIP of the faulting call site is the return address
+                   on the user stack. */
+                const u64 *sp = (const u64 *)r->rsp;
+                klog_err("  user call site (approx) = %p", (void *)sp[0]);
+            }
         }
         dump_registers(r);
         console_set_color(VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));

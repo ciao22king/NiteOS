@@ -29,6 +29,15 @@
 #define SYS_GETDENTS   20
 #define SYS_TICKS      21
 #define SYS_ABI        22
+#define SYS_ARCH_PRCTL 23
+#define SYS_SET_TID    24
+#define SYS_FUTEX      25
+#define SYS_MPROTECT   26
+#define SYS_GETRANDOM  27
+#define SYS_READLINK   28
+#define SYS_ACCESS     29
+#define SYS_STAT       30
+#define SYS_IOCTL      31
 
 /* ABI identifiers reported by SYS_ABI, used by the loaders to pick a personality. */
 #define NEO_ABI_NATIVE 0
@@ -58,5 +67,6 @@ void syscall_set_abi(int abi);
 int  syscall_get_abi(void);
 void syscall_set_args(int argc, char **argv);
 void syscall_set_cwd(const char *dir);
+void syscall_set_kernel_stack(u64 top);
 
 #endif
