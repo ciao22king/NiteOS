@@ -18,9 +18,11 @@ static u64 slen(const char *s) { u64 n = 0; while (s[n]) n++; return n; }
 void _start(void)
 {
     const char *msg = "hello from ELF64 on NiteKernel\n";
+    /* Linux numbers: an ELF image is entered with the Linux ABI, so exit is 60,
+       not 0. Using 0 here means read, and the process spins forever. */
     sys(1, 1, (u64)msg, slen(msg));
     const char *m2 = "ELF: exiting with code 42\n";
     sys(1, 1, (u64)m2, slen(m2));
-    sys(0, 42, 0, 0);
+    sys(60, 42, 0, 0);
     for (;;) ;
 }

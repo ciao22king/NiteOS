@@ -42,9 +42,9 @@ static void print_prompt(void)
     char ipbuf[16];
     struct netif *n = net_iface();
     if (n->configured)
-        console_printf("neo:%s> ", ip_str(n->ip, ipbuf));
+        console_printf("nite:%s> ", ip_str(n->ip, ipbuf));
     else
-        console_printf("neo> ");
+        console_printf("nite> ");
 }
 
 /* ---------------- commands ---------------- */
@@ -448,6 +448,11 @@ int shell_run_command(int argc, char **argv)
         console_printf("halting\n");
         for (;;) hlt();
     }
+    else if (!strcmp(c, "trace")) {
+        extern int syscall_trace;
+        syscall_trace = argc > 1 && !strcmp(argv[1], "on");
+        console_printf("syscall trace %s\n", syscall_trace ? "on" : "off");
+    }
     else if (!strcmp(c, "run") || !strcmp(c, "exec")) cmd_run(argc > 1 ? argv[1] : NULL,
                                                              argc, argv);
     else if (!strcmp(c, "lash") || !strcmp(c, "bash") || !strcmp(c, "sh"))
@@ -544,8 +549,37 @@ void shell_init(void)
     keyboard_init();
 }
 
+/* First-boot behaviour: execute /autorun.lash if it is on the volume, then
+   hand the console to a real bash when one is installed. bash exiting drops
+   the user back here, so the kernel command table stays reachable. */
+static void shell_boot_sequence(void)
+{
+    if (neofs_file_exists("autorun.lash")) {
+        long sz = neofs_file_size("autorun.lash");
+        if (sz > 0) {
+            char *src = kmalloc((u32)sz + 1);
+            if (src) {
+                u32 got = (u32)sz;
+                if (neofs_read_file("autorun.lash", src, got, &got) == 0) {
+                    src[got] = '\0';
+                    console_printf("[autorun] %s\n", "executing autorun.lash");
+                    lash_run_script("autorun.lash", src);
+                }
+                kfree(src);
+            }
+        }
+    }
+    if (neofs_file_exists("bash")) {
+        console_printf("[shell] starting GNU bash; type 'exit' for the kernel shell\n");
+        char *args[] = { "bash", NULL };
+        process_run_file("bash", 0, 1, args);
+        console_printf("[shell] bash finished; back at the kernel shell\n");
+    }
+}
+
 void shell_run(void)
 {
+    shell_boot_sequence();
     print_prompt();
     for (;;) {
         int c = keyboard_try_getchar();

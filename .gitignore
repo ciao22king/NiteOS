@@ -7,3 +7,14 @@ build/
 tools/testapps/hello_elf
 tools/testapps/hello_pe.exe
 __pycache__/
+tools/testapps/*.lashbin
+tools/testapps/hello.lash
+tools/testapps/hello.appimage
+tools/testapps/bash
+tools/testapps/pie
+tools/testapps/real_static
+tools/testapps/real_win.exe
+tools/testapps/raw_syscall
+tools/testapps/real_dyn
+tools/testapps/w1
+tools/testapps/w2
