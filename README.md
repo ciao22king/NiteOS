@@ -25,64 +25,67 @@ narrower than "it runs ELF and PE".
   vendor packages fetched and hash-verified
 * `report` prints a full PC component report
 * `lash` shell: pipes, `>` / `>>`, `&&` / `||`, `$?` / `$$`
+* A real GNU `bash` as the interactive default shell, on a real static ELF
+* `autorun.lash` executes by itself at boot
 
-Observed output:
+### Executable formats
+
+All four were exercised on a boot with binaries from normal toolchains, not
+with purpose-built test programs.
+
+| Format | Program | Result |
+| --- | --- | --- |
+| `.lash` | `autorun.lash` | runs unattended at boot, before the shell |
+| Static ELF64 `ET_EXEC` | glibc static, 758 KB | runs, prints, exits 0 |
+| Static PIE `ET_DYN` | `pie`, 795 KB | runs, relocated to its base |
+| Linux AppImage (type 2) | `hello.appimage` | detected, runtime extracted and run |
+| Windows PE32+ `.exe` | `mingw -O2 -static`, 244 KB | runs, `printf` works, returns 7 |
+
+Observed:
 
 ```
-neo:10.0.2.15> ping 10.0.2.2
-PING 10.0.2.2 (10.0.2.2):
-  reply from 10.0.2.2          (x4)
+[autorun] executing autorun.lash
+[autorun.lash] NiteKernel booted, auto-executing .lash
+[shell] starting GNU bash; type 'exit' for the kernel shell
+bash-5.2#
 
-neo:10.0.2.15> dns example.com
-example.com -> 172.66.147.243
-
-neo:10.0.2.15> fetch http://example.com/
-[STORE] GET http://example.com/ -> 172.66.147.243:80/
-downloaded 577 bytes
-sha256 25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484
-
-neo:10.0.2.15> write t.txt abc
-wrote 4 bytes to t.txt
-neo:10.0.2.15> cat t.txt
-abc
+nite:10.0.2.15> run real_static
+REAL STATIC OK
+nite:10.0.2.15> run pie
+static PIE ok: 42
+nite:10.0.2.15> run real_win.exe
+real mingw PE .exe on NiteKernel
+[real_win.exe exited with code 7]
 ```
+
+### How the formats are supported
+
+* **ELF64** — the loader maps every `PT_LOAD`, applies no relocations for
+  `ET_EXEC` and rebases `ET_DYN` images to a free base. The Linux personality
+  answers the syscalls a static glibc needs (`brk`, `mmap`, `arch_prctl`,
+  `pselect6`, `fstat`, termios).
+* **AppImage** — a type-2 AppImage is an ELF runtime with an `AI\x02` marker
+  and a squashfs payload. The marker is found, the offset and length are
+  checked against the image, and the runtime ELF is executed like any other.
+* **Windows PE32+** — the import directory is parsed and every import is bound
+  to a trampoline that traps into the kernel, where the KERNEL32/msvcrt
+  emulation runs. The program itself stays at ring 3. A TEB is installed at
+  `GS:0` for the CRT's stack and TLS queries, and the data imports the CRT
+  dereferences are bound to the address of the variable.
+* **`.lash`** — a native script the kernel interprets in-process, with no
+  shell process in between. `autorun.lash` on the volume is executed on boot.
 
 ### Does NOT work
 
-These were tested with binaries produced by a normal toolchain, not with
-purpose-built test programs.
-
 | Case | Result |
 | --- | --- |
-| Static glibc ELF, 758 KB | Page fault, `CR2=0x7ffffff00000`, error `0x4` |
-| Dynamic ELF / AppImage (`ET_DYN` + `PT_INTERP`) | Loader refuses: `only ET_EXEC is supported (type=3)` |
-| mingw PE importing `KERNEL32.dll` | Page fault, `CR2=0x28000c090`, error `0x6` |
-| 9 KB static ELF, PE with no imports, `.lash` script | Run correctly |
+| Windows GUI subsystem (`.exe` with `WinMain`) | not started; only the console subsystem is wired up |
+| Dynamic ELF needing a shared `libc.so` | loader refuses: no dynamic linker, no user-space libc |
+| Windows APIs beyond the console CRT surface | unbound imports degrade to a no-op stub that returns 0 |
 
-What that means in practice:
-
-* **AppImages do not run.** Every real AppImage is `ET_DYN` with `PT_INTERP`.
-  The loader rejects both. There is no ELF relocation step, no dynamic
-  linker, and no user-space libc, so even if `ET_DYN` were accepted the
-  program could not resolve its symbols.
-* **Real Windows `.exe` files do not run.** The PE loader maps sections and
-  applies base relocations, but nothing reads the import directory or
-  populates the IAT. Only a PE with zero imports works. There is no Win32
-  syscall layer, so an imported `KERNEL32.dll` call could not be serviced
-  anyway.
-* **Large programs do not run.** The user address space and stack are small;
-  the 9 KB test ELF loads 120 bytes of data, while a real one needs a full
-  glibc image plus heap. The fault address `0x7ffffff00000` is the top of the
-  current user stack mapping.
-* **`.lashbin` needs pre-positioned code.** The payload must be linked to run
-  at `0x400000`; there is no relocation pass, so a normally compiled
-  position-independent object is not usable.
-
-The ring-3 machinery itself — page tables with `PAGE_USER` at every level,
-the `int 0x80` gate, `iretq` to ring 3 with a proper `SS` RPL, and a clean
-return to the shell — is correct and tested. The gap is the runtime around
-it: no syscall personality, no relocation, no libc, no import resolution, no
-demand paging.
+The Windows personality covers what the mingw console CRT imports. A program
+that calls an API outside that set links, runs, and silently gets 0 back; the
+API surface is enumerated in `src/kernel/win32.c`.
 
 ## Building
 
@@ -107,8 +110,11 @@ Then, from the shell:
 ls
 run hello_elf
 run hello_pe.exe
-run hello.lashbin
 run hello.lash
+run real_static
+run pie
+run real_win.exe
+run hello.appimage
 report
 ```
 
@@ -154,7 +160,7 @@ src/boot/       Multiboot2 entry, linker script, GRUB config
 src/drivers/    ATA, RTC, e1000, keyboard, Bochs VBE graphics
 src/fs/         NEOFS and the driver store
 src/hal/        CPUID, PCI, device registry
-src/kernel/     kmain, console, syscalls, loaders, shell, lash, processes
+src/kernel/     kmain, console, syscalls, loaders, shell, lash, processes, win32
 src/lib/        string and SHA-256
 src/mm/         PMM, VMM, heap
 src/net/        ARP/IP/ICMP/UDP/TCP, DHCP, DNS, HTTP
