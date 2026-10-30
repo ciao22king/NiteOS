@@ -169,6 +169,8 @@ def main():
     appimage = build_appimage()
     script = os.path.join(OUT, "hello.lash")
     subprocess.check_call(["cp", os.path.join(SRC, "hello.lash"), script])
+    autorun = os.path.join(OUT, "autorun.lash")
+    subprocess.check_call(["cp", os.path.join(SRC, "autorun.lash"), autorun])
 
     files = [
         ("hello_elf", elf),
@@ -176,7 +178,13 @@ def main():
         ("hello.lash", script),
         ("hello.lashbin", lashbin),
         ("hello.appimage", appimage),
+        ("autorun.lash", autorun),
     ]
+    # bash-static is a real 2.4 MB static GNU bash, dropped in if present so the
+    # kernel can be shown running an unmodified shell.
+    real_bash = os.path.join(SRC, "bash")
+    if os.path.exists(real_bash):
+        files.append(("bash", real_bash))
     disk = pack_disk(files)
     print("built:")
     for name, path in files:

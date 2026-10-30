@@ -237,6 +237,9 @@ int process_mprotect(u64 addr, u64 len, u64 prot)
     struct process *p = current;
     if (!p || !p->space) return -1;
     if (len == 0) return 0;
+    /* Refuse an absurd length instead of walking billions of pages. A caller
+       that passes a garbage size gets EINVAL, not a hung kernel. */
+    if (len > (1ULL << 40)) return -1;
     addr = ALIGN_DOWN(addr, PAGE_SIZE);
     u64 end = ALIGN_UP(addr + len, PAGE_SIZE);
 
