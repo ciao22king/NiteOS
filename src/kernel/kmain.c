@@ -183,7 +183,7 @@ void kmain(u32 magic, u32 info_addr)
     syscall_init();
     process_init();
     lash_init();
-    klog_ok("ring-3 loader ready: ELF64 (.appimage), PE32+ (.exe), .lash native");
+    klog_ok("ring-3 loader ready: ELF64 ET_EXEC, PE32+ (no imports), .lash native");
     klog_ok("syscall gate int 0x80 installed (DPL 3)");
 
     console_printf("\n-- Input --\n");
