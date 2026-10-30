@@ -7,17 +7,37 @@ section .text
 global usermode_enter
 usermode_enter:
     cli
-    mov ax, 0x23            ; user data selector (index 4 << 3 | RPL 3)
+    mov ax, 0x1b            ; user data selector (index 3 << 3 | RPL 3)
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
+    ; FS and GS are deliberately not loaded: in long mode `mov gs, ax` sets
+    ; the segment base to 0, which would discard the value the Windows
+    ; personality put in the MSR (the TEB pointer).
 
-    push qword 0x23         ; SS (RPL 3 is mandatory for a ring-3 iretq)
+    push qword 0x1b         ; SS (RPL 3 is mandatory for a ring-3 iretq)
     push rsi                ; RSP
     push qword 0x202        ; RFLAGS: IF=1, bit1 always set
-    push qword 0x1B         ; CS  (index 3 << 3 | RPL 3)
+    push qword 0x23         ; CS  (index 4 << 3 | RPL 3)
     push rdi                ; RIP
+
+    ; A Linux process starts with a defined register state: the C runtime reads
+    ; rdx as the atexit function pointer and r9 as rtld_fini. Inheriting stale
+    ; kernel values makes glibc register a garbage exit handler.
+    xor eax, eax
+    xor ebx, ebx
+    xor ecx, ecx
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    xor ebp, ebp
+    xor r8d, r8d
+    xor r9d, r9d
+    xor r10d, r10d
+    xor r11d, r11d
+    xor r12d, r12d
+    xor r13d, r13d
+    xor r14d, r14d
+    xor r15d, r15d
     iretq
 
 ; The syscall interrupt gate (int 0x80) lands here. On entry the CPU has
@@ -69,6 +89,69 @@ syscall_stub:
     add rsp, 8              ; drop the alignment pad
     swapgs
     iretq
+
+; ---- syscall instruction entry (Linux ABI) ----
+; On entry from the `syscall` instruction: RCX = return RIP, R11 = RFLAGS,
+; RSP is still the user stack. Arguments follow the Linux convention
+; (rdi, rsi, rdx, r10, r8, r9), so arg3 comes from r10, not rcx.
+global syscall_entry
+extern syscall_dispatch
+section .data
+syscall_user_rsp:   dq 0
+syscall_user_rip:   dq 0
+syscall_user_rflags: dq 0
+section .text
+syscall_entry:
+    swapgs
+    mov [rel syscall_user_rsp], rsp
+    mov [rel syscall_user_rip], rcx
+    mov [rel syscall_user_rflags], r11
+    mov rsp, [rel syscall_kstack_top]     ; switch to the kernel stack
+    sti
+    push qword 0
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    push r11
+    push r10
+    push r9
+    push r8
+    push r10                ; arg3 (Linux: r10)
+    push rdx                ; arg2
+    push rsi                ; arg1
+    push rdi                ; arg0
+    push rax                ; syscall number
+    cld
+    mov rdi, rsp
+    call syscall_dispatch
+    add rsp, 8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    add rsp, 8
+    mov rsp, [rel syscall_user_rsp]
+    mov rcx, [rel syscall_user_rip]
+    mov r11, [rel syscall_user_rflags]
+    swapgs
+    o64 sysret
+
+section .data
+global syscall_kstack_top
+syscall_kstack_top: dq 0
 
 section .note.GNU-stack noalloc noexec nowrite progbits
 

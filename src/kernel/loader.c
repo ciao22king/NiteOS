@@ -1,4 +1,5 @@
 #include <loader.h>
+#include <win32.h>
 #include <console.h>
 #include <string.h>
 #include <mm.h>
@@ -34,11 +35,47 @@ int loader_map_segment(struct process *p, u64 vaddr, const u8 *data, u32 filesz,
             if (chunk > filesz - copied) chunk = filesz - copied;
             u64 phys = vmm_space_get_phys(p->space, page);
             if (!phys) return -1;
-            memcpy((u8 *)phys_to_virt(phys & PAGE_MASK) + off, data + copied, chunk);
+            memcpy((u8 *)phys_to_virt(phys & PTE_ADDR_MASK) + off, data + copied, chunk);
             copied += chunk;
         }
     }
+
+    /* Zero the zero-fill tail (memsz > filesz). The PMM does not clear pages,
+       so without this .bss holds whatever the previous owner left behind and a
+       C runtime reading an unset function pointer jumps into garbage. */
+    if (memsz > filesz) {
+        u64 pos = vaddr + filesz;
+        u64 end = vaddr + memsz;
+        while (pos < end) {
+            u64 page = ALIGN_DOWN(pos, PAGE_SIZE);
+            u64 off = pos - page;
+            u64 chunk = PAGE_SIZE - off;
+            if (chunk > end - pos) chunk = end - pos;
+            u64 phys = vmm_space_get_phys(p->space, page);
+            if (!phys) return -1;
+            memset((u8 *)phys_to_virt(phys & PTE_ADDR_MASK) + off, 0, chunk);
+            pos += chunk;
+        }
+    }
     return 0;
+}
+
+/* Read/write a 64-bit word in the target address space, resolving the page as
+   we go. Relocation slots are spread across mapped segments. */
+static u64 elf_read_u64(struct process *p, u64 vaddr)
+{
+    u64 phys = vmm_space_get_phys(p->space, vaddr);
+    if (!phys) return 0;
+    return *(const u64 *)((u8 *)phys_to_virt(phys & PTE_ADDR_MASK) +
+                          (vaddr & (PAGE_SIZE - 1)));
+}
+
+static void elf_write_u64(struct process *p, u64 vaddr, u64 value)
+{
+    u64 phys = vmm_space_get_phys(p->space, vaddr);
+    if (!phys) return;
+    *(u64 *)((u8 *)phys_to_virt(phys & PTE_ADDR_MASK) +
+             (vaddr & (PAGE_SIZE - 1))) = value;
 }
 
 /* ---------------- ELF64 ---------------- */
@@ -53,13 +90,12 @@ struct elf64_hdr {
     u16 ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
 } __attribute__((packed));
 
-struct elf64_phdr {
-    u32 type, flags;
-    u64 offset, vaddr, paddr, filesz, memsz, align;
-} __attribute__((packed));
+static int elf_apply_relative_relocs(struct process *p, const u8 *image, u32 size,
+                                     const struct elf64_hdr *eh, u64 bias);
 
 #define PT_LOAD    1
 #define PT_INTERP  3
+#define PT_DYNAMIC 2
 #define PF_X 1
 #define PF_W 2
 #define PF_R 4
@@ -71,13 +107,14 @@ int loader_elf(struct process *p, const u8 *image, u32 size)
     if (eh->ident[0] != 0x7F || eh->ident[1] != 'E' ||
         eh->ident[2] != 'L' || eh->ident[3] != 'F') return -1;
     if (eh->ident[4] != 2 /* ELFCLASS64 */ || eh->machine != 62 /* x86-64 */) return -1;
-    if (eh->type != 2 /* ET_EXEC */) {
-        /* ET_DYN would need relocation; report clearly instead of mis-executing. */
-        klog_warn("ELF: only ET_EXEC is supported (type=%u)", eh->type);
+    if (eh->type != 2 /* ET_EXEC */ && eh->type != 3 /* ET_DYN */) {
+        klog_warn("ELF: unsupported object type %u", eh->type);
         return -1;
     }
+    int is_dyn = (eh->type == 3);
 
-    /* A dynamically linked executable needs an interpreter we do not have. */
+    /* A dynamically linked executable needs an interpreter we do not have.
+       ET_DYN without PT_INTERP is a static PIE and is handled below. */
     for (int i = 0; i < eh->phnum; i++) {
         const struct elf64_phdr *ph =
             (const struct elf64_phdr *)(image + eh->phoff + (u64)i * eh->phentsize);
@@ -86,6 +123,40 @@ int loader_elf(struct process *p, const u8 *image, u32 size)
                      "build a static binary", p->name);
             return -1;
         }
+    }
+
+    /* The load base is the address file offset 0 is mapped at. AT_PHDR must be
+       base + e_phoff, not the raw file offset, or a PIE startup computes a
+       bogus load bias from the wrong "program headers". */
+    u64 vbase = (u64)-1;
+    for (int i = 0; i < eh->phnum; i++) {
+        const struct elf64_phdr *ph =
+            (const struct elf64_phdr *)(image + eh->phoff + (u64)i * eh->phentsize);
+        if (ph->type != PT_LOAD) continue;
+        u64 v = ALIGN_DOWN(ph->vaddr, PAGE_SIZE);
+        if (v < vbase) vbase = v;
+    }
+    if (vbase == (u64)-1) return -1;
+
+    /* ET_EXEC is placed where its p_vaddr says. ET_DYN has no fixed address,
+       so pick a base in the mmap region and add it to every virtual address. */
+    u64 bias = 0;
+    if (is_dyn) {
+        /* Total span of the loadable segments decides how much room to reserve. */
+        u64 top = 0;
+        for (int i = 0; i < eh->phnum; i++) {
+            const struct elf64_phdr *ph =
+                (const struct elf64_phdr *)(image + eh->phoff + (u64)i * eh->phentsize);
+            if (ph->type != PT_LOAD) continue;
+            u64 e = ALIGN_UP(ph->vaddr + ph->memsz, PAGE_SIZE);
+            if (e > top) top = e;
+        }
+        u64 base = process_reserve_image(p, vbase, top - vbase);
+        if (!base) {
+            klog_err("ELF: no room to place the PIE image");
+            return -1;
+        }
+        bias = base - vbase;
     }
 
     int loaded = 0;
@@ -97,18 +168,90 @@ int loader_elf(struct process *p, const u8 *image, u32 size)
             klog_err("ELF: segment %d extends past the file", i);
             return -1;
         }
-        if (loader_map_segment(p, ph->vaddr, image + ph->offset, (u32)ph->filesz,
-                               (u32)ph->memsz, (ph->flags & PF_W) != 0,
+        if (loader_map_segment(p, bias + ph->vaddr, image + ph->offset,
+                               (u32)ph->filesz, (u32)ph->memsz,
+                               (ph->flags & PF_W) != 0,
                                (ph->flags & PF_X) != 0) != 0)
             return -1;
         loaded++;
     }
     if (!loaded) return -1;
 
-    p->entry = eh->entry;
+    if (is_dyn && elf_apply_relative_relocs(p, image, size, eh, bias) != 0) {
+        klog_err("ELF: %s could not be relocated", p->name);
+        return -1;
+    }
+
+    p->entry = bias + eh->entry;
+    p->base  = bias + vbase;
+    p->phdr  = bias + vbase + eh->phoff;
+    p->phnum = eh->phnum;
     p->kind = PROC_KIND_LINUX;
-    klog_info("ELF", "loaded %s, entry %p, %d segment(s)", p->name,
-              (void *)eh->entry, loaded);
+    klog_info("ELF", "loaded %s (%s), entry %p, %d segment(s)", p->name,
+              is_dyn ? "PIE" : "exec", (void *)p->entry, loaded);
+    return 0;
+}
+
+/* Apply R_X86_64_RELATIVE entries from the PT_DYNAMIC segment. This is the
+   whole relocation story a static PIE needs: every slot is set to bias+addend,
+   with no symbol lookup. */
+static int elf_apply_relative_relocs(struct process *p, const u8 *image, u32 size,
+                                     const struct elf64_hdr *eh, u64 bias)
+{
+    const u8 *dyn = NULL;
+    u64 dynsz = 0;
+    for (int i = 0; i < eh->phnum; i++) {
+        const struct elf64_phdr *ph =
+            (const struct elf64_phdr *)(image + eh->phoff + (u64)i * eh->phentsize);
+        if (ph->type == PT_DYNAMIC) { dyn = image + ph->offset; dynsz = ph->filesz; }
+    }
+    if (!dyn) return 0;                       /* nothing to relocate */
+
+    u64 rela = 0, relasz = 0, relaent = 24, relr = 0, relrsz = 0, relrent = 8;
+    for (u64 o = 0; o + 16 <= dynsz; o += 16) {
+        u64 tag = *(const u64 *)(dyn + o);
+        u64 val = *(const u64 *)(dyn + o + 8);
+        if (tag == 0) break;                  /* DT_NULL */
+        switch (tag) {
+        case 7:  rela = val; break;           /* DT_RELA    */
+        case 8:  relasz = val; break;         /* DT_RELASZ  */
+        case 9:  relaent = val; break;        /* DT_RELAENT */
+        case 35: relr = val; break;           /* DT_RELR    */
+        case 36: relrsz = val; break;         /* DT_RELRSZ  */
+        case 37: relrent = val; break;        /* DT_RELRENT */
+        default: break;
+        }
+    }
+    if (relaent == 0) relaent = 24;
+
+    /* DT_RELA is a file offset for a PIE; add the bias to reach the slot. */
+    for (u64 o = 0; rela && o + relaent <= relasz; o += relaent) {
+        const u64 *e = (const u64 *)(image + rela + o);
+        u64 r_offset = e[0];
+        u64 r_info   = e[1];
+        u64 r_addend = e[2];
+        if ((r_info & 0xFFFFFFFFu) != 8 /* R_X86_64_RELATIVE */) continue;
+        elf_write_u64(p, bias + r_offset, bias + r_addend);
+    }
+
+    /* DT_RELR: a bitmap of relative slots, 8 bytes per word. */
+    if (relr && relrsz) {
+        u64 where = 0;
+        for (u64 o = 0; o + relrent <= relrsz; o += relrent) {
+            u64 entry = *(const u64 *)(image + relr + o);
+            if ((entry & 1) == 0) {
+                where = entry;
+                elf_write_u64(p, bias + where, bias + elf_read_u64(p, bias + where));
+                where += 8;
+            } else {
+                for (int b = 1; b < 64; b++)
+                    if (entry & (1ULL << b))
+                        elf_write_u64(p, bias + where + (b - 1) * 8,
+                                      bias + elf_read_u64(p, bias + where + (b - 1) * 8));
+                where += 63 * 8;
+            }
+        }
+    }
     return 0;
 }
 
@@ -158,6 +301,75 @@ struct pe_section {
 #define PE_SECT_EXEC   0x20000000u
 #define PE_DIR_BASERELOC 5
 
+/* ---------------- PE imports ---------------- */
+
+static u8 *pe_rva_ptr(const u8 *image, u32 size, const struct pe_section *secs,
+                      int nsec, u32 rva)
+{
+    for (int i = 0; i < nsec; i++) {
+        const struct pe_section *s = &secs[i];
+        if (rva >= s->vaddr && rva < s->vaddr + (s->vsize ? s->vsize : s->rawsize)) {
+            u32 off = s->rawptr + (rva - s->vaddr);
+            return off < size ? (u8 *)image + off : NULL;
+        }
+    }
+    return NULL;
+}
+
+static int pe_write_u64(struct process *p, u64 va, u64 value)
+{
+    u64 phys = vmm_space_get_phys(p->space, va);
+    if (!phys) return -1;
+    u64 *slot = (u64 *)((u8 *)phys_to_virt(phys & PAGE_MASK) + (va & (PAGE_SIZE - 1)));
+    *slot = value;
+    return 0;
+}
+
+static void pe_bind_imports(struct process *p, const u8 *image, u32 size, u64 base,
+                            const struct pe_section *secs, int nsec,
+                            const struct pe_opt64 *opt)
+{
+    if (opt->num_dirs < 2) return;
+    const u32 *dd = (const u32 *)((const u8 *)opt + sizeof(struct pe_opt64));
+    u32 imp_rva = dd[1 * 2], imp_sz = dd[1 * 2 + 1];
+    if (!imp_rva || !imp_sz) return;
+
+    u8 *desc = pe_rva_ptr(image, size, secs, nsec, imp_rva);
+    if (!desc) return;
+
+    /* The stubs live in a freshly mapped user page, so the personality has to
+       be initialised before the IAT can point at them. */
+    win32_init();
+
+    int bound = 0, total = 0;
+    for (u32 off = 0; off + 20 <= imp_sz; off += 20) {
+        u32 oft = *(const u32 *)(desc + off + 0);
+        u32 name_rva = *(const u32 *)(desc + off + 12);
+        u32 iat = *(const u32 *)(desc + off + 16);
+        if (oft == 0 && name_rva == 0 && iat == 0) break;
+
+        u32 thunk_rva = oft ? oft : iat;
+        const char *dll = name_rva ? (const char *)pe_rva_ptr(image, size, secs, nsec, name_rva) : NULL;
+        if (!dll) continue;
+
+        for (u32 i = 0;; i++) {
+            u8 *th = pe_rva_ptr(image, size, secs, nsec, thunk_rva + i * 8);
+            if (!th) break;
+            u64 ent = *(const u64 *)th;
+            if (ent == 0) break;
+            total++;
+            const char *sym = NULL;
+            if (!(ent >> 63)) {
+                u8 *nm = pe_rva_ptr(image, size, secs, nsec, (u32)ent);
+                if (nm) sym = (const char *)(nm + 2);      /* skip the 2-byte hint */
+            }
+            u64 stub = sym ? win32_bind_import(sym) : 0;
+            if (stub) { pe_write_u64(p, base + iat + i * 8, stub); bound++; }
+        }
+    }
+    klog_info("PE", "imports: %d of %d bound to kernel stubs", bound, total);
+}
+
 int loader_pe(struct process *p, const u8 *image, u32 size)
 {
     if (size < sizeof(struct pe_dos_hdr)) return -1;
@@ -180,6 +392,11 @@ int loader_pe(struct process *p, const u8 *image, u32 size)
     }
 
     u64 base = opt->image_base;
+    /* We always map at the image's preferred base, so the relocation delta is
+       zero. Adding `base` to a relocation slot would double-count the address
+       the linker already baked in (that is exactly what broke the mingw CRT:
+       a refptr holding 0x14000c090 became 0x28000c090). */
+    i64 reloc_delta = (i64)base - (i64)opt->image_base;
     u32 secoff = peoff + sizeof(struct pe_coff_hdr) + coff->opt_size;
     if (secoff + (u32)coff->nsections * sizeof(struct pe_section) > size) return -1;
 
@@ -240,13 +457,17 @@ int loader_pe(struct process *p, const u8 *image, u32 size)
                         if (!phys) continue;
                         u64 *slot = (u64 *)((u8 *)phys_to_virt(phys & PAGE_MASK) +
                                             (target & (PAGE_SIZE - 1)));
-                        *slot += base;
+                        *slot += (u64)reloc_delta;
                     }
                     done += block_sz;
                 }
             }
         }
     }
+
+    /* Bind the import address table. Every Windows API call goes through the
+       IAT, so this is the only place the kernel gets to interpose. */
+    pe_bind_imports(p, image, size, base, secs, coff->nsections, opt);
 
     p->entry = base + opt->entry_rva;
     p->kind = PROC_KIND_WIN32;

@@ -37,6 +37,34 @@ def build_elf():
     return os.path.join(OUT, "hello_elf")
 
 
+def build_real_static():
+    """A genuine glibc static binary, built by the stock compiler driver."""
+    out = os.path.join(OUT, "real_static")
+    subprocess.check_call([
+        "gcc", "-static", "-O2", "-o", out, os.path.join(SRC, "real_static.c"),
+    ])
+    return out
+
+
+def build_real_pie():
+    """A genuine static-PIE (ET_DYN) binary."""
+    out = os.path.join(OUT, "pie")
+    subprocess.check_call([
+        "gcc", "-static-pie", "-O2", "-o", out, os.path.join(SRC, "real_pie.c"),
+    ])
+    return out
+
+
+def build_real_win():
+    """A genuine mingw-w64 Windows console executable."""
+    out = os.path.join(OUT, "real_win.exe")
+    subprocess.check_call([
+        "x86_64-w64-mingw32-gcc", "-O2", "-static", "-o", out,
+        os.path.join(SRC, "real_win.c"),
+    ])
+    return out
+
+
 def build_pe():
     out = os.path.join(OUT, "hello_pe.exe")
     subprocess.check_call([
@@ -169,6 +197,8 @@ def main():
     appimage = build_appimage()
     script = os.path.join(OUT, "hello.lash")
     subprocess.check_call(["cp", os.path.join(SRC, "hello.lash"), script])
+    autorun = os.path.join(OUT, "autorun.lash")
+    subprocess.check_call(["cp", os.path.join(SRC, "autorun.lash"), autorun])
 
     files = [
         ("hello_elf", elf),
@@ -176,7 +206,21 @@ def main():
         ("hello.lash", script),
         ("hello.lashbin", lashbin),
         ("hello.appimage", appimage),
+        ("autorun.lash", autorun),
     ]
+    # Real toolchain binaries. Built from the .c sources above so the tests
+    # stay reproducible and no prebuilt blobs need to live in the tree.
+    files.append(("real_static", build_real_static()))
+    files.append(("pie", build_real_pie()))
+    files.append(("real_win.exe", build_real_win()))
+
+    # bash-static is a real 2.4 MB static GNU bash, dropped in if present so the
+    # kernel can be shown running an unmodified shell. Fetch it with
+    #   apt-get download bash-static && dpkg-deb -x bash-static_*.deb /tmp/b
+    #   cp /tmp/b/usr/bin/bash-static tools/testapps/bash
+    real_bash = os.path.join(SRC, "bash")
+    if os.path.exists(real_bash):
+        files.append(("bash", real_bash))
     disk = pack_disk(files)
     print("built:")
     for name, path in files:

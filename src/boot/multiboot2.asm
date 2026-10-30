@@ -84,7 +84,16 @@ setup_page_tables:
 enter_long_mode:
     mov eax, cr4
     or  eax, (1 << 5)             ; PAE
+    ; OSFXSR | OSXMMEXCPT: without these every SSE instruction raises #UD,
+    ; and user-space libc uses SSE2 throughout.
+    or  eax, (1 << 9) | (1 << 10)
     mov cr4, eax
+
+    ; SSE state: clear CR0.EM (bit 2) and CR0.TS (bit 3), set CR0.MP (bit 1).
+    mov eax, cr0
+    and eax, ~((1 << 2) | (1 << 3))
+    or  eax, (1 << 1)
+    mov cr0, eax
 
     mov eax, pml4
     mov cr3, eax

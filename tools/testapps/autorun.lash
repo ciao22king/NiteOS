@@ -1,0 +1,5 @@
+#!/bin/lash
+# NiteKernel autorun: executes automatically on first boot.
+echo "[autorun.lash] NiteKernel $NITEKERNEL_VERSION booted, auto-executing .lash"
+echo "[autorun.lash] shell is $SHELL, cwd $PWD"
+echo "[autorun.lash] native .lash format is running without any interpreter process"

@@ -53,8 +53,10 @@ void gdt_init(void)
     set_entry(0, 0, 0, 0, 0);
     set_entry(1, 0, 0, 0x9A, 0xA0);   /* 0x08 kernel code: L=1 */
     set_entry(2, 0, 0, 0x92, 0xC0);   /* 0x10 kernel data */
-    set_entry(3, 0, 0, 0xFA, 0xA0);   /* 0x18 user code */
-    set_entry(4, 0, 0, 0xF2, 0xC0);   /* 0x20 user data */
+    /* Order matters for sysretq: it derives SS from STAR+8 and CS from
+       STAR+16, so user data must sit immediately before user code. */
+    set_entry(3, 0, 0, 0xF2, 0xC0);   /* 0x18 user data */
+    set_entry(4, 0, 0, 0xFA, 0xA0);   /* 0x20 user code */
     write_tss(5, (u64)&tss, sizeof(tss) - 1);  /* 0x28 TSS */
 
     gdtp.limit = sizeof(gdt) - 1;
