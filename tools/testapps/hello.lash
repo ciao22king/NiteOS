@@ -1,0 +1,13 @@
+#!/bin/lash
+# Example lash script: exercises variables, conditionals, and redirection.
+NAME=NiteKernel
+echo "hello from a .lash script running on $NAME"
+echo "shell = $SHELL"
+echo "this line was written by lash" > /lashout.txt
+echo "and appended" >> /lashout.txt
+echo "--- contents of /lashout.txt ---"
+cat /lashout.txt
+true && echo "logical AND works"
+false || echo "logical OR works"
+echo "done, status is $?"
+exit 0
