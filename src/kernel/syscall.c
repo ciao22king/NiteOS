@@ -1,4 +1,5 @@
 #include <syscall.h>
+#include <win32.h>
 #include <console.h>
 #include <string.h>
 #include <mm.h>
@@ -299,6 +300,8 @@ static u64 linux_to_internal(u64 nr)
 u64 syscall_dispatch(struct syscall_frame *f)
 {
     extern int syscall_trace;
+    if (cur_abi == NEO_ABI_WIN32)
+        return win32_syscall(f->nr, f->a0, f->a1, f->a2, f->a3);
     u64 raw_nr = f->nr;
     if (cur_abi == NEO_ABI_LINUX) f->nr = linux_to_internal(f->nr);
     if (syscall_trace)

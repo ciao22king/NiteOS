@@ -1,4 +1,5 @@
 #include <loader.h>
+#include <win32.h>
 #include <console.h>
 #include <string.h>
 #include <mm.h>
@@ -300,6 +301,75 @@ struct pe_section {
 #define PE_SECT_EXEC   0x20000000u
 #define PE_DIR_BASERELOC 5
 
+/* ---------------- PE imports ---------------- */
+
+static u8 *pe_rva_ptr(const u8 *image, u32 size, const struct pe_section *secs,
+                      int nsec, u32 rva)
+{
+    for (int i = 0; i < nsec; i++) {
+        const struct pe_section *s = &secs[i];
+        if (rva >= s->vaddr && rva < s->vaddr + (s->vsize ? s->vsize : s->rawsize)) {
+            u32 off = s->rawptr + (rva - s->vaddr);
+            return off < size ? (u8 *)image + off : NULL;
+        }
+    }
+    return NULL;
+}
+
+static int pe_write_u64(struct process *p, u64 va, u64 value)
+{
+    u64 phys = vmm_space_get_phys(p->space, va);
+    if (!phys) return -1;
+    u64 *slot = (u64 *)((u8 *)phys_to_virt(phys & PAGE_MASK) + (va & (PAGE_SIZE - 1)));
+    *slot = value;
+    return 0;
+}
+
+static void pe_bind_imports(struct process *p, const u8 *image, u32 size, u64 base,
+                            const struct pe_section *secs, int nsec,
+                            const struct pe_opt64 *opt)
+{
+    if (opt->num_dirs < 2) return;
+    const u32 *dd = (const u32 *)((const u8 *)opt + sizeof(struct pe_opt64));
+    u32 imp_rva = dd[1 * 2], imp_sz = dd[1 * 2 + 1];
+    if (!imp_rva || !imp_sz) return;
+
+    u8 *desc = pe_rva_ptr(image, size, secs, nsec, imp_rva);
+    if (!desc) return;
+
+    /* The stubs live in a freshly mapped user page, so the personality has to
+       be initialised before the IAT can point at them. */
+    win32_init();
+
+    int bound = 0, total = 0;
+    for (u32 off = 0; off + 20 <= imp_sz; off += 20) {
+        u32 oft = *(const u32 *)(desc + off + 0);
+        u32 name_rva = *(const u32 *)(desc + off + 12);
+        u32 iat = *(const u32 *)(desc + off + 16);
+        if (oft == 0 && name_rva == 0 && iat == 0) break;
+
+        u32 thunk_rva = oft ? oft : iat;
+        const char *dll = name_rva ? (const char *)pe_rva_ptr(image, size, secs, nsec, name_rva) : NULL;
+        if (!dll) continue;
+
+        for (u32 i = 0;; i++) {
+            u8 *th = pe_rva_ptr(image, size, secs, nsec, thunk_rva + i * 8);
+            if (!th) break;
+            u64 ent = *(const u64 *)th;
+            if (ent == 0) break;
+            total++;
+            const char *sym = NULL;
+            if (!(ent >> 63)) {
+                u8 *nm = pe_rva_ptr(image, size, secs, nsec, (u32)ent);
+                if (nm) sym = (const char *)(nm + 2);      /* skip the 2-byte hint */
+            }
+            u64 stub = sym ? win32_bind_import(sym) : 0;
+            if (stub) { pe_write_u64(p, base + iat + i * 8, stub); bound++; }
+        }
+    }
+    klog_info("PE", "imports: %d of %d bound to kernel stubs", bound, total);
+}
+
 int loader_pe(struct process *p, const u8 *image, u32 size)
 {
     if (size < sizeof(struct pe_dos_hdr)) return -1;
@@ -394,6 +464,10 @@ int loader_pe(struct process *p, const u8 *image, u32 size)
             }
         }
     }
+
+    /* Bind the import address table. Every Windows API call goes through the
+       IAT, so this is the only place the kernel gets to interpose. */
+    pe_bind_imports(p, image, size, base, secs, coff->nsections, opt);
 
     p->entry = base + opt->entry_rva;
     p->kind = PROC_KIND_WIN32;

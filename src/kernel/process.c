@@ -1,4 +1,5 @@
 #include <process.h>
+#include <win32.h>
 #include <syscall.h>
 #include <console.h>
 #include <string.h>
@@ -360,6 +361,9 @@ static int enter_and_wait(struct process *p)
                     p->kind == PROC_KIND_WIN32 ? NEO_ABI_WIN32 : NEO_ABI_NATIVE);
     syscall_set_cwd(p->cwd);
     syscall_reset_fds();
+
+    if (p->kind == PROC_KIND_WIN32)
+        win32_set_tls();
 
     /* Per-process kernel stack. It must live in the kernel half so it stays
        mapped after CR3 switches to the process address space; it is also what

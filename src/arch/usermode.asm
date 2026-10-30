@@ -10,8 +10,9 @@ usermode_enter:
     mov ax, 0x1b            ; user data selector (index 3 << 3 | RPL 3)
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
+    ; FS and GS are deliberately not loaded: in long mode `mov gs, ax` sets
+    ; the segment base to 0, which would discard the value the Windows
+    ; personality put in the MSR (the TEB pointer).
 
     push qword 0x1b         ; SS (RPL 3 is mandatory for a ring-3 iretq)
     push rsi                ; RSP

@@ -68,6 +68,7 @@ static inline void wrmsr(u32 msr, u64 value)
 #define MSR_FMASK  0xC0000084
 #define MSR_FS_BASE 0xC0000100
 #define MSR_GS_BASE 0xC0000101
+#define MSR_KERNEL_GS_BASE 0xC0000102
 #define EFER_SCE   (1ULL << 0)
 
 /* Enable the `syscall`/`sysret` pair and point it at the kernel entry stub. */
