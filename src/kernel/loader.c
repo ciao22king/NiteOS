@@ -322,6 +322,11 @@ int loader_pe(struct process *p, const u8 *image, u32 size)
     }
 
     u64 base = opt->image_base;
+    /* We always map at the image's preferred base, so the relocation delta is
+       zero. Adding `base` to a relocation slot would double-count the address
+       the linker already baked in (that is exactly what broke the mingw CRT:
+       a refptr holding 0x14000c090 became 0x28000c090). */
+    i64 reloc_delta = (i64)base - (i64)opt->image_base;
     u32 secoff = peoff + sizeof(struct pe_coff_hdr) + coff->opt_size;
     if (secoff + (u32)coff->nsections * sizeof(struct pe_section) > size) return -1;
 
@@ -382,7 +387,7 @@ int loader_pe(struct process *p, const u8 *image, u32 size)
                         if (!phys) continue;
                         u64 *slot = (u64 *)((u8 *)phys_to_virt(phys & PAGE_MASK) +
                                             (target & (PAGE_SIZE - 1)));
-                        *slot += base;
+                        *slot += (u64)reloc_delta;
                     }
                     done += block_sz;
                 }

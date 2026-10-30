@@ -1,6 +1,7 @@
 #include <cpu.h>
 #include <string.h>
 #include <console.h>
+#include <process.h>
 
 #define IDT_ENTRIES 256
 
@@ -86,6 +87,15 @@ void isr_dispatch(struct registers *r)
                 const u64 *sp = (const u64 *)r->rsp;
                 klog_err("  user call site (approx) = %p", (void *)sp[0]);
             }
+        }
+        /* A fault taken while running ring-3 code is the program's problem,
+           not the kernel's: kill the process and return to the shell. Only a
+           fault in kernel mode is fatal. */
+        if ((r->cs & 3) == 3) {
+            dump_registers(r);
+            console_set_color(VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
+            console_printf("process terminated by a fault\n");
+            process_exit(139);
         }
         dump_registers(r);
         console_set_color(VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
