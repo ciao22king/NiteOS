@@ -1,0 +1,8 @@
+build/
+*.o
+*.iso
+*.elf
+*.bin
+*.img
+tools/testapps/hello_elf
+tools/testapps/hello_pe.exe
