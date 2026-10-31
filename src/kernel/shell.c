@@ -80,6 +80,12 @@ static void cmd_help(void)
     console_printf("  clear             clear the screen\n");
     console_printf("  reboot            reset the machine\n");
     console_printf("  halt              stop the CPU\n");
+    console_printf("  poweroff          stop the CPU (alias for halt)\n");
+    console_printf("  trace [on|off]    toggle syscall tracing\n");
+    console_printf("  run <file>        execute an ELF/PE/.lash program\n");
+    console_printf("  exec <file>       alias for run\n");
+    console_printf("  lash <file>       run a .lash script\n");
+    console_printf("  bash|sh|<file>    built-in lash interpreter\n");
 }
 
 static void cmd_cpu(void)
@@ -469,7 +475,7 @@ static const char *command_names[] = {
     "ata", "lsblk", "net", "dhcp", "ifconfig", "ping", "dns", "fetch",
     "store", "drivers", "install", "fs", "ls", "dir", "cat", "rm", "del",
     "write", "echo", "uptime", "clear", "reboot", "halt", "poweroff",
-    "run", "exec", "lash", "bash", "sh", NULL
+    "run", "exec", "lash", "bash", "sh", "trace", NULL
 };
 
 int shell_has_command(const char *name)
