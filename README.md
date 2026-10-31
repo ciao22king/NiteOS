@@ -25,12 +25,13 @@ narrower than "it runs ELF and PE".
   vendor packages fetched and hash-verified
 * `report` prints a full PC component report
 * `lash` shell: pipes, `>` / `>>`, `&&` / `||`, `$?` / `$$`
-* A real GNU `bash` as the interactive default shell, on a real static ELF
+* Runs an unmodified static GNU `bash` as the interactive shell when
+  `bash` is present on the NEOFS volume (optional input; see Building)
 * `autorun.lash` executes by itself at boot
 
 ### Executable formats
 
-All four were exercised on a boot with binaries from normal toolchains, not
+All five were exercised on a boot with binaries from normal toolchains, not
 with purpose-built test programs.
 
 | Format | Program | Result |
@@ -99,14 +100,17 @@ make run                          # boot in QEMU
 ```
 
 `build_testapps.py` additionally needs `x86_64-w64-mingw32-gcc` for the
-Windows tests, and `qemu-system-x86_64` to run anything. Two of its inputs are
-not built from source and are skipped when absent:
+Windows tests, and `qemu-system-x86_64` to run anything. One input is
+optional:
 
-* `tools/testapps/bash` — a static GNU bash. Fetch it with
-  `apt-get download bash-static && dpkg-deb -x bash-static_*.deb /tmp/b` and
-  copy `/tmp/b/usr/bin/bash-static` into place.
-* `tools/testapps/*.appimage` — a type-2 AppImage; without one the AppImage
-  test entry is still built from the ELF test program.
+* `tools/testapps/bash` — a static GNU bash (optional). If present, it is
+  included in the NEOFS image so the kernel can run an unmodified shell.
+  Fetch it with:
+  `apt-get download bash-static && dpkg-deb -x bash-static_*.deb /tmp/b`
+  and copy `/tmp/b/usr/bin/bash-static` to `tools/testapps/bash`.
+
+The AppImage test (`hello.appimage`) is always built from the ELF test program
+by patching the ELF header with the `AI\x02` type-2 marker.
 
 To exercise the loaders, attach the NEOFS image:
 
@@ -160,6 +164,13 @@ echo <text>       print text
 clear             clear the screen
 reboot            reset the machine
 halt              stop the CPU
+poweroff          stop the CPU (alias for halt)
+trace [on|off]    toggle syscall tracing
+run <file>        execute an ELF/PE/.lash program
+exec <file>       alias for run
+lash <file>       run a .lash script
+bash / sh / lash  built-in lash interpreter (bash-compatible subset;
+                  `bash -c '<cmd>'` runs an inline line)
 ```
 
 ## Layout
