@@ -25,12 +25,13 @@ narrower than "it runs ELF and PE".
   vendor packages fetched and hash-verified
 * `report` prints a full PC component report
 * `lash` shell: pipes, `>` / `>>`, `&&` / `||`, `$?` / `$$`
-* A real GNU `bash` as the interactive default shell, on a real static ELF
+* Runs an unmodified static GNU `bash` as the interactive shell when
+  `bash` is present on the NEOFS volume (optional input; see Building)
 * `autorun.lash` executes by itself at boot
 
 ### Executable formats
 
-All four were exercised on a boot with binaries from normal toolchains, not
+All five were exercised on a boot with binaries from normal toolchains, not
 with purpose-built test programs.
 
 | Format | Program | Result |
@@ -89,30 +90,92 @@ API surface is enumerated in `src/kernel/win32.c`.
 
 ## Building
 
-The kernel needs `gcc`, `nasm`, `ld`, `grub-mkrescue` (from `grub-pc-bin`,
-plus `xorriso` and `mtools` which it shells out to) and `python3`.
+### Installing the dependencies
+
+The kernel itself is built with a normal host toolchain; no cross-compiler is
+needed for the kernel, only for the Windows test program.
+
+Debian / Ubuntu / Mint:
+
+```sh
+sudo apt install build-essential gcc binutils nasm python3 \
+    grub-pc-bin grub-common xorriso mtools \
+    qemu-system-x86 qemu-utils gcc-mingw-w64-x86-64
+```
+
+Arch Linux:
+
+```sh
+sudo pacman -S --needed base-devel gcc binutils nasm python \
+    grub libisoburn mtools qemu-system-x86 qemu-img mingw-w64-gcc
+```
+
+Fedora:
+
+```sh
+sudo dnf install gcc binutils nasm python3 make \
+    grub2-tools-extra xorriso mtools \
+    qemu-system-x86 qemu-img mingw64-gcc
+```
+
+Notes:
+
+* `grub-mkrescue` comes from `grub-pc-bin` (Debian), `grub` (Arch) or
+  `grub2-tools-extra` (Fedora); it shells out to `xorriso` and `mtools`.
+  On Fedora the tool is named `grub2-mkrescue`, so add a symlink the build
+  can find:
+  ```sh
+  sudo ln -s /usr/sbin/grub2-mkrescue /usr/local/bin/grub-mkrescue
+  ```
+* `x86_64-w64-mingw32-gcc` (Debian: `gcc-mingw-w64-x86-64`, Arch/Fedora:
+  `mingw-w64-gcc` / `mingw64-gcc`) is only needed for the PE test binaries.
+  Everything else builds without it.
+* `qemu-system-x86_64` and `qemu-img` are needed for `make run*` and
+  `make disk`.
+* A static GNU `bash` is optional; see below.
+
+### Building and running
 
 ```sh
 make                              # build/nitekernel.elf, .iso, driver store
 python3 tools/build_testapps.py   # test programs and build/testapps/apps.img
-make run                          # boot in QEMU
+make run                          # boot in QEMU (serial console)
 ```
 
+The Makefile provides several boot modes:
+
+| Command | What it boots |
+| --- | --- |
+| `make run` | serial console, no disk (fastest smoke test) |
+| `make run-apps` | serial console + `build/testapps/apps.img`, to exercise the ELF/PE/PIE/AppImage/.lash loaders |
+| `make run-net` | serial console + e1000 NIC + blank `build/disk.img`, exercises DHCP and driver acquisition |
+| `make run-vga` | VGA framebuffer + serial, no window |
+| `make run-gui` | graphical QEMU window with VGA + serial |
+
+`make run-apps` requires the test image, so build it first with
+`python3 tools/build_testapps.py`. `make run-net` creates `build/disk.img` on
+demand (or run `make disk` explicitly).
+
 `build_testapps.py` additionally needs `x86_64-w64-mingw32-gcc` for the
-Windows tests, and `qemu-system-x86_64` to run anything. Two of its inputs are
-not built from source and are skipped when absent:
+Windows tests, and `qemu-system-x86_64` to run anything. One input is
+optional:
 
-* `tools/testapps/bash` — a static GNU bash. Fetch it with
-  `apt-get download bash-static && dpkg-deb -x bash-static_*.deb /tmp/b` and
-  copy `/tmp/b/usr/bin/bash-static` into place.
-* `tools/testapps/*.appimage` — a type-2 AppImage; without one the AppImage
-  test entry is still built from the ELF test program.
+* `tools/testapps/bash` — a static GNU bash (optional). If present, it is
+  included in the NEOFS image so the kernel can run an unmodified shell.
+  Fetch it with:
+  `apt-get download bash-static && dpkg-deb -x bash-static_*.deb /tmp/b`
+  and copy `/tmp/b/usr/bin/bash-static` to `tools/testapps/bash`.
 
-To exercise the loaders, attach the NEOFS image:
+The AppImage test (`hello.appimage`) is always built from the ELF test program
+by patching the ELF header with the `AI\x02` type-2 marker.
+
+To exercise the loaders, attach the NEOFS image (this is exactly what
+`make run-apps` runs):
 
 ```sh
 qemu-system-x86_64 -cdrom build/nitekernel.iso -m 512M -display none \
-    -serial stdio -drive file=build/testapps/apps.img,format=raw,if=ide
+    -serial stdio -drive file=build/testapps/apps.img,format=raw,if=ide \
+    -no-reboot -no-shutdown
 ```
 
 Then, from the shell:
@@ -160,6 +223,13 @@ echo <text>       print text
 clear             clear the screen
 reboot            reset the machine
 halt              stop the CPU
+poweroff          stop the CPU (alias for halt)
+trace [on|off]    toggle syscall tracing
+run <file>        execute an ELF/PE/.lash program
+exec <file>       alias for run
+lash <file>       run a .lash script
+bash / sh / lash  built-in lash interpreter (bash-compatible subset;
+                  `bash -c '<cmd>'` runs an inline line)
 ```
 
 ## Layout

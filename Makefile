@@ -25,9 +25,10 @@ OBJS     := $(ASM_OBJS) $(C_OBJS)
 
 DRIVERS  := $(BUILD)/drivers
 DISK     := $(BUILD)/disk.img
+APPS     := $(BUILD)/testapps/apps.img
 STORE_SRC := $(DRIVERS)/driver_store_gen.c
 
-.PHONY: all iso clean run run-vga run-gui drivers disk mirror
+.PHONY: all iso clean run run-apps run-net run-vga run-gui drivers disk mirror
 
 all: $(ISO) $(DRIVERS)/store.json
 
@@ -74,6 +75,14 @@ mirror: $(DRIVERS)/store.json
 # Plain serial console (headless verification)
 run: $(ISO)
 	qemu-system-x86_64 -cdrom $(ISO) -m 512M -serial stdio -display none \
+	  -no-reboot -no-shutdown
+
+# Serial console with the NEOFS test image attached, to exercise the
+# ELF/PE/PIE/AppImage/.lash loaders built by tools/build_testapps.py.
+run-apps: $(ISO)
+	@test -f $(APPS) || { echo "missing $(APPS); run: python3 tools/build_testapps.py" >&2; exit 1; }
+	qemu-system-x86_64 -cdrom $(ISO) -m 512M -serial stdio -display none \
+	  -drive file=$(APPS),format=raw,if=ide \
 	  -no-reboot -no-shutdown
 
 # Headless with a NIC and a blank disk: exercises DHCP + driver acquisition.
