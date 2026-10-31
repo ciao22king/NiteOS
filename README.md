@@ -90,8 +90,51 @@ API surface is enumerated in `src/kernel/win32.c`.
 
 ## Building
 
-The kernel needs `gcc`, `nasm`, `ld`, `grub-mkrescue` (from `grub-pc-bin`,
-plus `xorriso` and `mtools` which it shells out to) and `python3`.
+### Installing the dependencies
+
+The kernel itself is built with a normal host toolchain; no cross-compiler is
+needed for the kernel, only for the Windows test program.
+
+Debian / Ubuntu / Mint:
+
+```sh
+sudo apt install build-essential gcc binutils nasm python3 \
+    grub-pc-bin grub-common xorriso mtools \
+    qemu-system-x86 qemu-utils gcc-mingw-w64-x86-64
+```
+
+Arch Linux:
+
+```sh
+sudo pacman -S --needed base-devel gcc binutils nasm python \
+    grub libisoburn mtools qemu-system-x86 qemu-img mingw-w64-gcc
+```
+
+Fedora:
+
+```sh
+sudo dnf install gcc binutils nasm python3 make \
+    grub2-tools-extra xorriso mtools \
+    qemu-system-x86 qemu-img mingw64-gcc
+```
+
+Notes:
+
+* `grub-mkrescue` comes from `grub-pc-bin` (Debian), `grub` (Arch) or
+  `grub2-tools-extra` (Fedora); it shells out to `xorriso` and `mtools`.
+  On Fedora the tool is named `grub2-mkrescue`, so add a symlink the build
+  can find:
+  ```sh
+  sudo ln -s /usr/sbin/grub2-mkrescue /usr/local/bin/grub-mkrescue
+  ```
+* `x86_64-w64-mingw32-gcc` (Debian: `gcc-mingw-w64-x86-64`, Arch/Fedora:
+  `mingw-w64-gcc` / `mingw64-gcc`) is only needed for the PE test binaries.
+  Everything else builds without it.
+* `qemu-system-x86_64` and `qemu-img` are needed for `make run*` and
+  `make disk`.
+* A static GNU `bash` is optional; see below.
+
+### Building and running
 
 ```sh
 make                              # build/nitekernel.elf, .iso, driver store
