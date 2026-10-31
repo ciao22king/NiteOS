@@ -89,13 +89,24 @@ API surface is enumerated in `src/kernel/win32.c`.
 
 ## Building
 
-Requires `gcc`, `nasm`, `ld`, `grub-mkrescue` and `python3`.
+The kernel needs `gcc`, `nasm`, `ld`, `grub-mkrescue` (from `grub-pc-bin`,
+plus `xorriso` and `mtools` which it shells out to) and `python3`.
 
 ```sh
 make                              # build/nitekernel.elf, .iso, driver store
 python3 tools/build_testapps.py   # test programs and build/testapps/apps.img
 make run                          # boot in QEMU
 ```
+
+`build_testapps.py` additionally needs `x86_64-w64-mingw32-gcc` for the
+Windows tests, and `qemu-system-x86_64` to run anything. Two of its inputs are
+not built from source and are skipped when absent:
+
+* `tools/testapps/bash` — a static GNU bash. Fetch it with
+  `apt-get download bash-static && dpkg-deb -x bash-static_*.deb /tmp/b` and
+  copy `/tmp/b/usr/bin/bash-static` into place.
+* `tools/testapps/*.appimage` — a type-2 AppImage; without one the AppImage
+  test entry is still built from the ELF test program.
 
 To exercise the loaders, attach the NEOFS image:
 
