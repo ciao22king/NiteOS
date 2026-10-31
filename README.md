@@ -139,8 +139,22 @@ Notes:
 ```sh
 make                              # build/nitekernel.elf, .iso, driver store
 python3 tools/build_testapps.py   # test programs and build/testapps/apps.img
-make run                          # boot in QEMU
+make run                          # boot in QEMU (serial console)
 ```
+
+The Makefile provides several boot modes:
+
+| Command | What it boots |
+| --- | --- |
+| `make run` | serial console, no disk (fastest smoke test) |
+| `make run-apps` | serial console + `build/testapps/apps.img`, to exercise the ELF/PE/PIE/AppImage/.lash loaders |
+| `make run-net` | serial console + e1000 NIC + blank `build/disk.img`, exercises DHCP and driver acquisition |
+| `make run-vga` | VGA framebuffer + serial, no window |
+| `make run-gui` | graphical QEMU window with VGA + serial |
+
+`make run-apps` requires the test image, so build it first with
+`python3 tools/build_testapps.py`. `make run-net` creates `build/disk.img` on
+demand (or run `make disk` explicitly).
 
 `build_testapps.py` additionally needs `x86_64-w64-mingw32-gcc` for the
 Windows tests, and `qemu-system-x86_64` to run anything. One input is
@@ -155,11 +169,13 @@ optional:
 The AppImage test (`hello.appimage`) is always built from the ELF test program
 by patching the ELF header with the `AI\x02` type-2 marker.
 
-To exercise the loaders, attach the NEOFS image:
+To exercise the loaders, attach the NEOFS image (this is exactly what
+`make run-apps` runs):
 
 ```sh
 qemu-system-x86_64 -cdrom build/nitekernel.iso -m 512M -display none \
-    -serial stdio -drive file=build/testapps/apps.img,format=raw,if=ide
+    -serial stdio -drive file=build/testapps/apps.img,format=raw,if=ide \
+    -no-reboot -no-shutdown
 ```
 
 Then, from the shell:
