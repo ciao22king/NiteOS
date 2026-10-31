@@ -325,17 +325,21 @@ static int pe_write_u64(struct process *p, u64 va, u64 value)
     return 0;
 }
 
-static void pe_bind_imports(struct process *p, const u8 *image, u32 size, u64 base,
-                            const struct pe_section *secs, int nsec,
-                            const struct pe_opt64 *opt)
+/* Returns how many imports the image declares. A PE with none is a
+   freestanding program that talks to the kernel over int 0x80 itself, so it
+   keeps the native ABI; only an image that imports KERNEL32/msvcrt gets the
+   Win32 personality. */
+static int pe_bind_imports(struct process *p, const u8 *image, u32 size, u64 base,
+                           const struct pe_section *secs, int nsec,
+                           const struct pe_opt64 *opt)
 {
-    if (opt->num_dirs < 2) return;
+    if (opt->num_dirs < 2) return 0;
     const u32 *dd = (const u32 *)((const u8 *)opt + sizeof(struct pe_opt64));
     u32 imp_rva = dd[1 * 2], imp_sz = dd[1 * 2 + 1];
-    if (!imp_rva || !imp_sz) return;
+    if (!imp_rva || !imp_sz) return 0;
 
     u8 *desc = pe_rva_ptr(image, size, secs, nsec, imp_rva);
-    if (!desc) return;
+    if (!desc) return 0;
 
     /* The stubs live in a freshly mapped user page, so the personality has to
        be initialised before the IAT can point at them. */
@@ -368,6 +372,7 @@ static void pe_bind_imports(struct process *p, const u8 *image, u32 size, u64 ba
         }
     }
     klog_info("PE", "imports: %d of %d bound to kernel stubs", bound, total);
+    return total;
 }
 
 int loader_pe(struct process *p, const u8 *image, u32 size)
@@ -467,10 +472,10 @@ int loader_pe(struct process *p, const u8 *image, u32 size)
 
     /* Bind the import address table. Every Windows API call goes through the
        IAT, so this is the only place the kernel gets to interpose. */
-    pe_bind_imports(p, image, size, base, secs, coff->nsections, opt);
+    int imports = pe_bind_imports(p, image, size, base, secs, coff->nsections, opt);
 
     p->entry = base + opt->entry_rva;
-    p->kind = PROC_KIND_WIN32;
+    p->kind = imports ? PROC_KIND_WIN32 : PROC_KIND_NATIVE;
     klog_info("PE", "loaded %s, image base %p, entry %p, %u section(s)", p->name,
               (void *)base, (void *)p->entry, coff->nsections);
     return 0;
