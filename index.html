@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Nitos — un kernel x86-64 sperimentale, costruito da zero." />
+    <title>Nitos — Bare metal, senza compromessi</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Nitos home"><span class="brand-mark">N</span><span>nitos</span></a>
+      <nav aria-label="Navigazione principale">
+        <a href="#capabilities">Capacità</a>
+        <a href="#quickstart">Quickstart</a>
+        <a class="nav-button" href="https://github.com/ciao22king/NiteOS" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="eyebrow"><span class="pulse"></span> x86-64 · multiboot2 · open source</div>
+        <h1>Un sistema operativo<br /><em>senza strati inutili.</em></h1>
+        <p class="hero-copy">Nitos è un kernel bare-metal costruito da zero: memoria, networking, filesystem e processi sotto il tuo controllo.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#quickstart">Inizia da qui <span aria-hidden="true">↓</span></a>
+          <a class="button button-quiet" href="https://github.com/ciao22king/NiteOS" target="_blank" rel="noreferrer">Esplora il codice <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="terminal-preview" aria-label="Anteprima terminale Nitos">
+          <div class="terminal-bar"><span></span><span></span><span></span><label>nitos — serial console</label></div>
+          <div class="terminal-body"><p><b>nite</b>:10.0.2.15&gt; <span>report</span></p><p class="muted">CPU      AMD64 · 4 cores · long mode</p><p class="muted">MEM      512M · paging enabled · heap ready</p><p class="muted">NET      e1000 · DHCP · TCP/IP · DNS</p><p><b>nite</b>:10.0.2.15&gt; <span class="cursor"></span></p></div>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Metriche del progetto">
+        <div><strong>5</strong><span>formati eseguibili</span></div>
+        <div><strong>0</strong><span>dipendenze runtime</span></div>
+        <div><strong>100%</strong><span>controllo del kernel</span></div>
+      </section>
+
+      <section id="capabilities" class="section">
+        <div class="section-heading"><span class="kicker">01 / cosa c'è dentro</span><h2>Piccolo abbastanza<br /><span>da capire tutto.</span></h2></div>
+        <div class="capability-grid">
+          <article><span class="number">01</span><h3>Core minimale</h3><p>GDT, IDT, PIC, PIT, paging e heap kernel. Le fondamenta, leggibili e senza magia.</p></article>
+          <article><span class="number">02</span><h3>Rete reale</h3><p>ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS e HTTP. Nitos parla davvero con internet.</p></article>
+          <article><span class="number">03</span><h3>Processi nativi</h3><p>ELF64, PIE, AppImage e PE32+ eseguiti in ring 3, con syscall e address space dedicati.</p></article>
+          <article><span class="number">04</span><h3>Filesystem NEOFS</h3><p>Un volume persistente per leggere, scrivere, installare driver e avviare script .lash.</p></article>
+        </div>
+      </section>
+
+      <section id="quickstart" class="quickstart section">
+        <div class="section-heading"><span class="kicker">02 / primo boot</span><h2>Tre comandi.<br /><span>Un kernel vivo.</span></h2></div>
+        <div class="code-card"><div class="code-title">shell <span>quickstart</span></div><pre><code><span class="code-comment"># costruisci l'immagine ISO</span>
+make
+
+<span class="code-comment"># prepara le app di test</span>
+python3 tools/build_testapps.py
+
+<span class="code-comment"># avvia Nitos in QEMU</span>
+make run-apps</code></pre></div>
+      </section>
+    </main>
+
+    <footer><a class="brand" href="#top"><span class="brand-mark">N</span><span>nitos</span></a><p>Built close to the metal.</p><span class="footer-status"><span class="pulse"></span> systems nominal</span></footer>
+  </body>
+</html>
