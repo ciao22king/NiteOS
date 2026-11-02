@@ -38,6 +38,12 @@ void lash_init(void)
     lash_set_var("PATH", "/");
     lash_set_var("SHELL", "/bin/lash");
     lash_set_var("HOME", "/");
+    /* PWD and NITEKERNEL_VERSION are part of the documented environment:
+       autorun.lash and the README expand both, and an unset PWD made `pwd` and
+       $PWD disagree with the working directory at boot. */
+    lash_set_var("PWD", "/");
+    lash_set_var("HOSTNAME", "nitekernel");
+    lash_set_var("NITEKERNEL_VERSION", NITEKERNEL_VERSION);
     lash_set_var("PS1", "neo> ");
 }
 
@@ -172,12 +178,8 @@ static int split_words(const char *s, char *outbuf, u32 outmax, char *argv[], in
 
 static int builtin_cd(int argc, char **argv)
 {
-    const char *dir = argc > 1 ? argv[1] : "/";
-    if (dir[0] != '/') {
-        char cwd[128];
-        lash_set_var("PWD", dir);
-        (void)cwd;
-    }
+    const char *home = lash_get_var("HOME");
+    const char *dir = argc > 1 ? argv[1] : (home ? home : "/");
     lash_set_var("PWD", dir);
     syscall_set_cwd(dir);
     return 0;
@@ -267,7 +269,7 @@ static int exec_simple(int argc, char **argv, const char *redir_out,
             int rc = exec_simple(argc, argv, NULL, 0, stdin_buf, stdin_len);
             u32 len = syscall_out_length();
             syscall_reset_fds();
-            int ok;
+            int ok = -1;
             if (redir_append) {
                 /* Append: read the existing file, then write back concatenated. */
                 long fsize = neofs_file_size(redir_out);
@@ -279,12 +281,17 @@ static int exec_simple(int argc, char **argv, const char *redir_out,
                     memcpy(merged + got, buf, len);
                     ok = neofs_write_file(redir_out, merged, got + len);
                     kfree(merged);
-                    (void)ok;
                 }
             } else {
-                neofs_write_file(redir_out, buf, len);
+                ok = neofs_write_file(redir_out, buf, len);
             }
             kfree(buf);
+            /* A redirect that cannot be stored has to say so: the old code threw
+               the result away, so a full volume silently lost the output. */
+            if (ok != 0) {
+                console_printf("lash: %s: write failed\n", redir_out);
+                return 1;
+            }
             return rc;
         }
     }
@@ -325,6 +332,21 @@ static int exec_simple(int argc, char **argv, const char *redir_out,
     return 127;
 }
 
+/* Find `target` outside quotes. A `>`, `<` or `|` inside "..." or '...' is data,
+   not an operator: `lash -c 'echo a > f'` hands the whole redirect over as a
+   single argument to the inner command. */
+static char *find_unquoted(char *s, char target)
+{
+    int in_single = 0, in_double = 0;
+    for (char *p = s; *p; p++) {
+        if (*p == '\\' && !in_single && p[1]) { p++; continue; }
+        if (*p == '\'' && !in_double) { in_single = !in_single; continue; }
+        if (*p == '"' && !in_single) { in_double = !in_double; continue; }
+        if (!in_single && !in_double && *p == target) return p;
+    }
+    return NULL;
+}
+
 /* Execute a command string that may contain pipes and redirections. */
 static int exec_command(const char *cmd)
 {
@@ -336,7 +358,7 @@ static int exec_command(const char *cmd)
     /* Output redirection. */
     char *rout = NULL;
     int append = 0;
-    char *gt = strchr(work, '>');
+    char *gt = find_unquoted(work, '>');
     if (gt) {
         if (gt[1] == '>') { append = 1; *gt = '\0'; gt += 2; }
         else { *gt = '\0'; gt++; }
@@ -347,12 +369,26 @@ static int exec_command(const char *cmd)
         rout = gt;
     }
 
+    /* Input redirection: `< file` feeds that file to the first stage as stdin,
+       so `cat < file` and `cat < file | cat` behave like the real thing. */
+    char *rin = NULL;
+    char *lt = find_unquoted(work, '<');
+    if (lt) {
+        *lt = '\0';
+        char *src = lt + 1;
+        while (*src == ' ' || *src == '\t') src++;
+        char *end = src;
+        while (*end && *end != ' ' && *end != '\t') end++;
+        *end = '\0';
+        rin = src;
+    }
+
     /* Split on pipes. */
     char *stages[PIPE_MAX];
     int nstages = 0;
     char *p = work;
     while (nstages < PIPE_MAX) {
-        char *bar = strchr(p, '|');
+        char *bar = find_unquoted(p, '|');
         if (!bar) { stages[nstages++] = p; break; }
         *bar = '\0';
         stages[nstages++] = p;
@@ -362,6 +398,25 @@ static int exec_command(const char *cmd)
     int rc = 0;
     u8 *feed = NULL;
     u32 feed_len = 0;
+    if (rin) {
+        char path[160];
+        const char *p = rin;
+        if (p[0] == '.' && p[1] == '/') p += 2;
+        strlcpy(path, p, sizeof(path));
+        long sz = neofs_file_size(path);
+        if (sz < 0) {
+            console_printf("lash: %s: no such file\n", path);
+            return 1;
+        }
+        feed = kmalloc((u32)sz ? (u32)sz : 1);
+        if (!feed) return 1;
+        feed_len = (u32)sz;
+        if (sz && neofs_read_file(path, feed, feed_len, &feed_len) != 0) {
+            kfree(feed);
+            console_printf("lash: %s: unreadable\n", path);
+            return 1;
+        }
+    }
     for (int i = 0; i < nstages; i++) {
         char *stage = stages[i];
         str_trim(stage);
@@ -387,6 +442,9 @@ static int exec_command(const char *cmd)
         }
     }
     if (feed) kfree(feed);
+    /* Drop the redirection buffers: their owners are about to free them (or
+       have already done so), and a stale fd 0 pointer must not survive. */
+    syscall_reset_fds();
     return rc;
 }
 

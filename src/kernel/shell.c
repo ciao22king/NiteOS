@@ -25,6 +25,13 @@ static char line[LINE_MAX];
 static u32 line_len;
 static char history[HISTORY_MAX][LINE_MAX];
 static int history_count;
+/* Line editing state: which history entry is on screen (== history_count when
+   editing a fresh line), the draft saved at the first recall, how many columns
+   the painted line occupies, and the serial escape-sequence parser. */
+static int hist_pos;
+static char hist_draft[LINE_MAX];
+static u32 rendered_cols;
+static int esc_state;
 
 extern struct hw_profile *device_profile(void);
 extern void rtc_now_string(char *buf, usize n);
@@ -37,14 +44,24 @@ static void cmd_lash(char *path, int argc, char **argv);
 
 /* ---------------- helpers ---------------- */
 
-static void print_prompt(void)
+/* The prompt gains the address once DHCP or ifconfig configured the
+   interface. It is rebuilt on every repaint so line editing stays aligned. */
+static void build_prompt(char *buf, usize n)
 {
     char ipbuf[16];
-    struct netif *n = net_iface();
-    if (n->configured)
-        console_printf("nite:%s> ", ip_str(n->ip, ipbuf));
+    struct netif *net = net_iface();
+    if (net->configured)
+        snprintf(buf, n, "nite:%s> ", ip_str(net->ip, ipbuf));
     else
-        console_printf("nite> ");
+        strlcpy(buf, "nite> ", n);
+}
+
+static void print_prompt(void)
+{
+    char buf[48];
+    build_prompt(buf, sizeof(buf));
+    console_write(buf);
+    rendered_cols = (u32)strlen(buf);
 }
 
 /* ---------------- commands ---------------- */
@@ -85,6 +102,8 @@ static void cmd_help(void)
     console_printf("  run <file>        execute an ELF/PE/.lash program\n");
     console_printf("  exec <file>       alias for run\n");
     console_printf("  lash <file>       run a .lash script\n");
+    console_printf("  history           recall list of this session's commands\n");
+    console_printf("  sha256sum <file>  print the SHA-256 of a file\n");
     console_printf("  bash|sh|<file>    built-in lash interpreter\n");
 }
 
@@ -256,9 +275,26 @@ static void cmd_ls(void)
 
 static void cmd_cat(char *name)
 {
-    if (!name) { console_printf("usage: cat <file>\n"); return; }
     static u8 buf[NEOFS_MAX_FILE_SIZE];
     u32 size = 0;
+    if (!name) {
+        /* No operand means "copy stdin", which is what makes `ls | cat` and
+           `cat < file` work. Refuse to block on a console with no data. */
+        if (!syscall_stdin_redirected()) {
+            console_printf("usage: cat <file>\n");
+            return;
+        }
+        long n;
+        while (size < sizeof(buf) - 1 &&
+               (n = syscall_stdin_read(buf + size, (u32)(sizeof(buf) - 1 - size))) > 0)
+            size += (u32)n;
+        for (u32 i = 0; i < size; i++) {
+            if (buf[i] == 0) break;
+            console_putc((char)buf[i]);
+        }
+        if (size && buf[size - 1] != '\n') console_putc('\n');
+        return;
+    }
     if (neofs_read_file(name, buf, sizeof(buf), &size) != 0) {
         console_printf("cannot read %s\n", name);
         return;
@@ -286,6 +322,38 @@ static void cmd_rm(char *name)
     if (!name) { console_printf("usage: rm <file>\n"); return; }
     if (neofs_delete_file(name) == 0) console_printf("removed %s\n", name);
     else console_printf("cannot remove %s\n", name);
+}
+
+static void cmd_history(void)
+{
+    int avail = history_count < HISTORY_MAX ? history_count : HISTORY_MAX;
+    if (!avail) { console_printf("no history yet\n"); return; }
+    int first = history_count - avail;
+    for (int i = 0; i < avail; i++)
+        console_printf("  %d  %s\n", first + i + 1, history[(first + i) % HISTORY_MAX]);
+}
+
+/* Hash a file with the kernel's SHA-256, so a volume round trip can be checked
+   against the same digest a host tool computes. */
+static void cmd_sha256sum(char *name)
+{
+    if (!name) { console_printf("usage: sha256sum <file>\n"); return; }
+    long sz = neofs_file_size(name);
+    if (sz < 0) { console_printf("sha256sum: %s: no such file\n", name); return; }
+    u8 *data = kmalloc((u32)sz ? (u32)sz : 1);
+    if (!data) { console_printf("sha256sum: out of memory\n"); return; }
+    u32 got = (u32)sz;
+    if (neofs_read_file(name, data, got, &got) != 0) {
+        kfree(data);
+        console_printf("sha256sum: %s: unreadable\n", name);
+        return;
+    }
+    u8 digest[32];
+    char hex[65];
+    sha256(data, got, digest);
+    sha256_hex(digest, hex);
+    console_printf("%s  %s\n", hex, name);
+    kfree(data);
 }
 
 static void cmd_store(void)
@@ -425,19 +493,25 @@ int shell_run_command(int argc, char **argv)
     else if (!strcmp(c, "ls") || !strcmp(c, "dir")) cmd_ls();
     else if (!strcmp(c, "cat")) cmd_cat(argc > 1 ? argv[1] : NULL);
     else if (!strcmp(c, "rm") || !strcmp(c, "del")) cmd_rm(argc > 1 ? argv[1] : NULL);
+    else if (!strcmp(c, "history")) cmd_history();
+    else if (!strcmp(c, "sha256sum") || !strcmp(c, "sha256"))
+        cmd_sha256sum(argc > 1 ? argv[1] : NULL);
     else if (!strcmp(c, "write")) {
-        /* Everything after the file name is the payload. */
-        char *rest = argc > 2 ? argv[2] : NULL;
-        if (argc > 3) {
-            /* Re-join the remaining tokens with single spaces. */
-            char *p = argv[2];
-            for (int i = 3; i < argc; i++) {
-                usize l = strlen(p);
-                p[l] = ' ';
-                strlcpy(p + l + 1, argv[i], LINE_MAX - l - 1);
+        /* Everything after the file name is the payload. Join the tokens into a
+           bounded local buffer: the old version rewrote argv[2] in place and
+           could run past the tokeniser's word buffer. */
+        char payload[LINE_MAX];
+        payload[0] = '\0';
+        if (argc > 2) {
+            u32 pos = (u32)strlcpy(payload, argv[2], sizeof(payload));
+            for (int i = 3; i < argc && pos + 2 < sizeof(payload); i++) {
+                payload[pos++] = ' ';
+                usize room = sizeof(payload) - pos;
+                usize n = strlcpy(payload + pos, argv[i], room);
+                pos += (u32)(n < room ? n : room - 1);
             }
         }
-        cmd_write(argc > 1 ? argv[1] : NULL, rest);
+        cmd_write(argc > 1 ? argv[1] : NULL, argc > 2 ? payload : NULL);
     }
     else if (!strcmp(c, "echo")) {
         for (int i = 1; i < argc; i++) console_printf("%s%s", argv[i], i + 1 < argc ? " " : "");
@@ -474,6 +548,7 @@ static const char *command_names[] = {
     "help", "?", "report", "cpu", "mem", "pci", "gfx", "rtc", "time", "date",
     "ata", "lsblk", "net", "dhcp", "ifconfig", "ping", "dns", "fetch",
     "store", "drivers", "install", "fs", "ls", "dir", "cat", "rm", "del",
+    "history", "sha256sum", "sha256",
     "write", "echo", "uptime", "clear", "reboot", "halt", "poweroff",
     "run", "exec", "lash", "bash", "sh", "trace", NULL
 };
@@ -492,27 +567,98 @@ int shell_execute(const char *cmdline)
 
 /* ---------------- interactive loop ---------------- */
 
+/* Repaint the input line in place. The three sinks (serial, VGA text, linear
+   framebuffer) share no escape-sequence support, so this returns to column 0,
+   rewrites prompt and line, blanks whatever a longer previous render left
+   behind, then walks back to the end of the text. */
 static void redraw_line(void)
 {
-    console_printf("\rneo> %s", line);
+    char prompt[48];
+    build_prompt(prompt, sizeof(prompt));
+    console_printf("\r%s%s", prompt, line);
+    u32 now = (u32)strlen(prompt) + line_len;
+    if (rendered_cols > now) {
+        u32 pad = rendered_cols - now;
+        for (u32 i = 0; i < pad; i++) console_putc(' ');
+        for (u32 i = 0; i < pad; i++) console_putc('\b');
+    }
+    rendered_cols = now;
+}
+
+/* ---------------- history recall ---------------- */
+
+static int history_available(void)
+{
+    return history_count < HISTORY_MAX ? history_count : HISTORY_MAX;
+}
+
+static void history_load(int idx)
+{
+    strlcpy(line, history[idx % HISTORY_MAX], LINE_MAX);
+    line_len = (u32)strlen(line);
+}
+
+static void history_up(void)
+{
+    int avail = history_available();
+    if (avail == 0) return;
+    int oldest = history_count - avail;
+    if (hist_pos == history_count) strlcpy(hist_draft, line, LINE_MAX);
+    if (hist_pos <= oldest) return;              /* already at the oldest entry */
+    hist_pos--;
+    history_load(hist_pos);
+    redraw_line();
+}
+
+static void history_down(void)
+{
+    if (hist_pos >= history_count) return;       /* already on a fresh line */
+    hist_pos++;
+    if (hist_pos == history_count) {
+        strlcpy(line, hist_draft, LINE_MAX);
+        line_len = (u32)strlen(line);
+    } else {
+        history_load(hist_pos);
+    }
+    redraw_line();
 }
 
 static void handle_char(char c)
 {
+    /* A serial terminal sends the arrow keys as ESC [ A / ESC [ B. Fold them
+       into the codes the PS/2 driver synthesises so both inputs edit the line
+       the same way. */
+    if (esc_state) {
+        int state = esc_state;
+        esc_state = 0;
+        if (state == 1 && c == '[') { esc_state = 2; return; }
+        if (state == 2) {
+            if (c == 'A') history_up();
+            else if (c == 'B') history_down();
+        }
+        return;
+    }
+    if (c == 0x1B) { esc_state = 1; return; }
+    if (c == KEY_UP) { history_up(); return; }
+    if (c == KEY_DOWN) { history_down(); return; }
+
     if (c == '\r') c = '\n';
 
     if (c == '\n') {
         console_printf("\n");
         line[line_len] = '\0';
+        rendered_cols = 0;
         if (line_len > 0) {
-            /* Remember the command in history. */
+            /* Remember the command in history, skipping repeats of the last one. */
             if (history_count == 0 || strcmp(history[(history_count - 1) % HISTORY_MAX], line) != 0) {
                 strlcpy(history[history_count % HISTORY_MAX], line, LINE_MAX);
                 history_count++;
             }
             shell_execute(line);
         }
+        hist_pos = history_count;       /* next edit starts below history */
         line_len = 0;
+        line[0] = '\0';
         print_prompt();
         return;
     }
@@ -520,6 +666,7 @@ static void handle_char(char c)
     if (c == '\b' || c == 0x7F) {
         if (line_len > 0) {
             line_len--;
+            if (rendered_cols) rendered_cols--;
             console_printf("\b \b");
         }
         return;
@@ -528,6 +675,9 @@ static void handle_char(char c)
     if (c == 3) {                       /* Ctrl+C */
         console_printf("^C\n");
         line_len = 0;
+        line[0] = '\0';
+        rendered_cols = 0;
+        hist_pos = history_count;
         print_prompt();
         return;
     }
@@ -535,15 +685,19 @@ static void handle_char(char c)
     if (c == 12) {                      /* Ctrl+L */
         console_clear();
         print_prompt();
-        console_printf("%s", line);
+        if (line_len) {
+            console_printf("%s", line);
+            rendered_cols += line_len;
+        }
         return;
     }
 
     if (c >= ' ' && line_len < LINE_MAX - 1) {
         line[line_len++] = c;
+        line[line_len] = '\0';
         console_putc(c);
+        rendered_cols++;
     }
-    (void)redraw_line;
 }
 
 void shell_input(char c) { handle_char(c); }
@@ -551,7 +705,12 @@ void shell_input(char c) { handle_char(c); }
 void shell_init(void)
 {
     line_len = 0;
+    line[0] = '\0';
     history_count = 0;
+    hist_pos = 0;
+    hist_draft[0] = '\0';
+    rendered_cols = 0;
+    esc_state = 0;
     keyboard_init();
 }
 

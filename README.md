@@ -24,7 +24,10 @@ narrower than "it runs ELF and PE".
 * First-boot driver acquisition: PCI IDs matched against a driver store, the
   vendor packages fetched and hash-verified
 * `report` prints a full PC component report
-* `lash` shell: pipes, `>` / `>>`, `&&` / `||`, `$?` / `$$`
+* `lash` shell: pipes, `>` / `>>` / `<`, `&&` / `||`, `$?` / `$$`, history
+  recall with the arrow keys (serial and PS/2 keyboard)
+* `make test`: a headless boot test that drives the serial console and checks
+  the boot log, the shell, the filesystem and the loaders
 * Runs an unmodified static GNU `bash` as the interactive shell when
   `bash` is present on the NEOFS volume (optional input; see Building)
 * `autorun.lash` executes by itself at boot
@@ -156,6 +159,24 @@ The Makefile provides several boot modes:
 `python3 tools/build_testapps.py`. `make run-net` creates `build/disk.img` on
 demand (or run `make disk` explicitly).
 
+### Testing
+
+```sh
+make test
+```
+
+boots the ISO in QEMU with no NIC, waits for the shell prompt and then drives
+the serial console like a terminal, checking `help`, `uptime`, `mem`, `echo`,
+a pipeline, output redirection of a builtin, a NEOFS round trip verified with
+the host's own SHA-256, history recall and — when `build/testapps/apps.img`
+exists — the ELF64, PE32+ and real mingw `.exe` loaders. It exits non-zero on
+the first mismatch and writes the console transcript to `build/boottest.log.out`.
+
+The options mirror the boot targets: `--apps` attaches the test image,
+`--net user` adds a NIC so DHCP and driver acquisition run too, and `--timeout`
+and `--accel` tune the run (`python3 tools/boottest.py --help`). Like every
+`run*` target it needs QEMU.
+
 `build_testapps.py` additionally needs `x86_64-w64-mingw32-gcc` for the
 Windows tests, and `qemu-system-x86_64` to run anything. One input is
 optional:
@@ -228,6 +249,8 @@ trace [on|off]    toggle syscall tracing
 run <file>        execute an ELF/PE/.lash program
 exec <file>       alias for run
 lash <file>       run a .lash script
+history           recall list of this session's commands
+sha256sum <file>  print the SHA-256 of a file
 bash / sh / lash  built-in lash interpreter (bash-compatible subset;
                   `bash -c '<cmd>'` runs an inline line)
 ```

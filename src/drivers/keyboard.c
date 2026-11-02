@@ -68,7 +68,18 @@ static void keyboard_irq(struct registers *regs)
         flags &= ~KEY_EXTENDED;
         return;
     }
+    int extended = (old_flags & KEY_EXTENDED) != 0;
     if (released) { flags &= ~KEY_EXTENDED; return; }
+
+    /* E0-prefixed keys we act on: the arrow keys, delivered as the same codes a
+       serial terminal sends for Ctrl+P / Ctrl+N. Everything else extended is
+       dropped so it can never be mistaken for printable text. */
+    if (extended) {
+        flags &= ~KEY_EXTENDED;
+        if (code == 0x48) { push(KEY_UP); pending_char = 1; }
+        else if (code == 0x50) { push(KEY_DOWN); pending_char = 1; }
+        return;
+    }
 
     char c = 0;
     if (code < 128) {
@@ -79,8 +90,10 @@ static void keyboard_irq(struct registers *regs)
     }
 
     if (c) {
-        if ((flags & KEY_CTRL) && c >= 'a' && c <= 'z') c -= 32;   /* Ctrl+A..Z */
-        if ((flags & KEY_CTRL) && c == 'c') c = 3;
+        /* Ctrl+letter becomes the ASCII control code (Ctrl+C = 0x03). Uppercasing
+           first, as this used to, turned Ctrl+C into 'C', so the keyboard could
+           never interrupt the line being edited. */
+        if ((flags & KEY_CTRL) && c >= 'a' && c <= 'z') c = (char)(c & 0x1F);
         push(c);
         pending_char = 1;
         if (echo) console_putc(c);

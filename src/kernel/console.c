@@ -18,6 +18,9 @@ static u32  fb_width, fb_height, fb_pitch, fb_bpp;
 static u32  fb_cx, fb_cy;
 static u32  fb_fg = 0x00C8C8C8, fb_bg = 0x000A0A14;
 
+/* See console_set_sink(). */
+static console_sink_fn out_sink;
+
 /* --- serial --- */
 static void serial_init(void)
 {
@@ -172,8 +175,11 @@ void console_attach_fb(void *addr, u32 width, u32 height, u32 pitch, u32 bpp)
 
 int console_has_fb(void) { return fb_addr != NULL; }
 
+void console_set_sink(console_sink_fn fn) { out_sink = fn; }
+
 void console_putc(char c)
 {
+    if (out_sink && out_sink(c)) return;
     serial_putc(c);
     vga_putc(c);
     fb_putc(c);

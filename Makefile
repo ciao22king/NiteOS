@@ -28,7 +28,7 @@ DISK     := $(BUILD)/disk.img
 APPS     := $(BUILD)/testapps/apps.img
 STORE_SRC := $(DRIVERS)/driver_store_gen.c
 
-.PHONY: all iso clean run run-apps run-net run-vga run-gui drivers disk mirror
+.PHONY: all iso clean run run-apps run-net run-vga run-gui drivers disk mirror test
 
 all: $(ISO) $(DRIVERS)/store.json
 
@@ -54,9 +54,16 @@ $(ISO): $(OUT) src/boot/grub.cfg
 # Host-side driver store: index the vendor driver packages under tools/payloads
 # so the kernel can match them against the PCI hardware it discovers, then
 # download and verify them on first boot.
-$(DRIVERS)/store.json $(STORE_SRC): tools/build_store.py $(wildcard tools/payloads/*)
+# One generator run writes both store.json and driver_store_gen.c. Listing both
+# as targets of one rule made parallel make run the generator twice concurrently
+# on the same output files, so the store is built once and the .c is only
+# generated again if it is genuinely missing.
+$(DRIVERS)/store.json: tools/build_store.py $(wildcard tools/payloads/*)
 	@mkdir -p $(DRIVERS)
 	$(PYTHON) tools/build_store.py $(DRIVERS)
+
+$(STORE_SRC): $(DRIVERS)/store.json
+	@test -f $@ || $(PYTHON) tools/build_store.py $(DRIVERS)
 
 drivers: $(DRIVERS)/store.json
 
@@ -90,6 +97,12 @@ run-net: $(ISO) $(DISK)
 	qemu-system-x86_64 -cdrom $(ISO) -m 512M -serial stdio -display none \
 	  -drive file=$(DISK),format=raw,if=ide -netdev user,id=n0 -device e1000,netdev=n0 \
 	  -no-reboot -no-shutdown
+
+# Headless boot test: drives the serial console and checks the output.
+# --apps is only added when the test image has been built.
+test: $(ISO)
+	$(PYTHON) tools/boottest.py --iso $(ISO) \
+	  $(if $(wildcard $(APPS)),--apps $(APPS),)
 
 # VGA + serial, no window (screenshot-able via monitor)
 run-vga: $(ISO)

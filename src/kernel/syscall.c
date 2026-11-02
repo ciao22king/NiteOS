@@ -32,10 +32,14 @@ void syscall_msr_init(void)
     wrmsr(MSR_FMASK, 0x700);
 }
 
+static int syscall_stdout_sink(char c);
+
 void syscall_init(void)
 {
     idt_set_gate(0x80, (u64)syscall_stub, 3);   /* DPL 3: callable from ring 3 */
     syscall_msr_init();
+    /* Shell redirection: console_putc() offers every character to this hook. */
+    console_set_sink(syscall_stdout_sink);
 }
 
 /* The kernel stack the `syscall` entry switches to. It must be set before any
@@ -59,6 +63,7 @@ const char *syscall_cwd(void) { return cur_cwd; }
 struct fd_entry {
     int   used;
     int   is_pipe;
+    int   owns;          /* `data` was allocated by open() and must be freed */
     u8   *data;
     u32   size;
     u32   pos;
@@ -66,31 +71,62 @@ struct fd_entry {
 
 static struct fd_entry fds[FD_MAX];
 
+/* stdout is a buffer: keep the character instead of rendering it. Returning 1
+   (even when the buffer is full) stops it reaching the screen. */
+static int syscall_stdout_sink(char c)
+{
+    if (!fds[1].data) return 0;
+    if (fds[1].pos < fds[1].size) fds[1].data[fds[1].pos++] = (u8)c;
+    return 1;
+}
+
+static void fd_release(int fd)
+{
+    if (fd < 0 || fd >= FD_MAX) return;
+    if (fds[fd].owns && fds[fd].data) kfree(fds[fd].data);
+    memset(&fds[fd], 0, sizeof(fds[fd]));
+}
+
 static int fd_alloc(void)
 {
     for (int i = 3; i < FD_MAX; i++)
-        if (!fds[i].used) { memset(&fds[i], 0, sizeof(fds[i])); fds[i].used = 1; return i; }
+        if (!fds[i].used) { fd_release(i); fds[i].used = 1; return i; }
     return -1;
 }
 
 void syscall_reset_fds(void)
 {
-    memset(fds, 0, sizeof(fds));
+    /* Release the buffers open() allocated and drop every redirection. The
+       reset used to memset the table only, so each program that opened a file
+       leaked its copy of the image into the kernel heap. */
+    for (int i = 0; i < FD_MAX; i++) fd_release(i);
     /* 0,1,2 are the console and are always live. */
     fds[0].used = fds[1].used = fds[2].used = 1;
 }
 
 void syscall_set_stdio(const u8 *in, u32 in_len, u8 *out, u32 out_cap, u32 *out_len)
 {
-    syscall_reset_fds();
-    fds[0].data = (u8 *)in;
-    fds[0].size = in_len;
-    fds[1].data = out;
-    fds[1].size = out_cap;
-    fds[1].pos = 0;
-    fds[2].data = out;
-    fds[2].size = out_cap;
-    fds[2].pos = 0;
+    /* Only the streams named by the caller are reprogrammed. Resetting the
+       whole table here turned the other half of a nested redirection off, so
+       `cat < file > out` lost its capture buffer. */
+    if (in) {
+        fds[0].data = (u8 *)in;
+        fds[0].size = in_len;
+        fds[0].pos = 0;
+        fds[0].owns = 0;
+        fds[0].used = 1;
+    }
+    if (out) {
+        fds[1].data = out;
+        fds[1].size = out_cap;
+        fds[1].pos = 0;
+        fds[1].owns = 0;
+        fds[1].used = 1;
+        fds[2].data = out;
+        fds[2].size = out_cap;
+        fds[2].pos = 0;
+        fds[2].used = 1;
+    }
     (void)out_len;
 }
 
@@ -156,6 +192,13 @@ static u64 do_read(int fd, void *buf, u32 len)
     return n;
 }
 
+int syscall_stdin_redirected(void) { return fds[0].data != NULL; }
+
+long syscall_stdin_read(void *buf, u32 len)
+{
+    return (long)do_read(0, buf, len);
+}
+
 /* access(path, mode): report existence only. mode is ignored. */
 static u64 do_access(const char *path)
 {
@@ -213,6 +256,7 @@ static u64 do_open(const char *path, u64 flags)
     fds[fd].data = buf;
     fds[fd].size = size;
     fds[fd].pos = 0;
+    fds[fd].owns = 1;
     return (u64)fd;
 }
 
@@ -322,7 +366,7 @@ u64 syscall_dispatch(struct syscall_frame *f)
            AT_FDCWD (-100) means "relative to cwd", which is what we do anyway. */
         return do_open((const char *)f->a1, f->a2);
     case SYS_CLOSE:
-        if (f->a0 < FD_MAX && f->a0 >= 3) fds[f->a0].used = 0;
+        if (f->a0 < FD_MAX && f->a0 >= 3) fd_release((int)f->a0);
         return 0;
     case SYS_SEEK:
         return do_seek((int)f->a0, (i64)f->a1, (int)f->a2);

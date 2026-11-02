@@ -68,8 +68,14 @@ u64  syscall_dispatch(struct syscall_frame *f);
 /* Process file-descriptor table. 0/1/2 are the console unless the shell
    redirects them into buffers. */
 void syscall_reset_fds(void);
+/* Point stdin at `in` and/or stdout+stderr at `out`. A stream passed as NULL is
+   left untouched, so nested redirection keeps the half it did not ask for. */
 void syscall_set_stdio(const u8 *in, u32 in_len, u8 *out, u32 out_cap, u32 *out_len);
 u32  syscall_out_length(void);
+/* True when stdin is a buffer (a pipe or `< file`) instead of the console. */
+int  syscall_stdin_redirected(void);
+/* Read from the process stdin; negative on error. */
+long syscall_stdin_read(void *buf, u32 len);
 const char *syscall_cwd(void);
 
 /* Set by the loader before entering ring 3. */

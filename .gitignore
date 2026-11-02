@@ -1,3 +1,6 @@
+# Local toolchain scaffolding for hosts without root (see README)
+.toolchain/
+
 build/
 *.o
 *.iso

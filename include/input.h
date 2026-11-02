@@ -12,6 +12,12 @@
 #define KEY_CAPS    (1u << 3)
 #define KEY_EXTENDED (1u << 4)
 
+/* Line-editing codes delivered through the same character stream as text, so
+   a terminal and a PS/2 keyboard drive the shell identically. They match the
+   control codes a terminal sends for Ctrl+P / Ctrl+N. */
+#define KEY_UP   0x10
+#define KEY_DOWN 0x0E
+
 struct key_event {
     char ascii;      /* translated character, 0 for non-printable */
     u8   scancode;   /* raw make/break code */
