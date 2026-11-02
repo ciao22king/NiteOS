@@ -234,6 +234,8 @@ fetch <url>       HTTP GET (prints size + sha256)
 store             list the driver store
 drivers           installed driver database
 install           run first-boot driver acquisition
+install <app>     install an app package from the app store
+apps [term]       list or search the app store
 fs                filesystem status
 ls                list files on the NEOFS volume
 cat <file>        print a file
@@ -255,6 +257,37 @@ bash / sh / lash  built-in lash interpreter (bash-compatible subset;
                   `bash -c '<cmd>'` runs an inline line)
 ```
 
+## App store
+
+`lash install <name>` (or plain `install <name>`) searches the app store for an
+app and installs the package this machine can actually run:
+
+```
+lite> apps hello
+  hello      1.0   greets from whichever package this machine can run
+      dmg      hello.dmg            0 bytes  macOS only, never selected
+      exe      hello.exe         5600 bytes  alternative
+      lash     hello.lash         202 bytes  preferred
+```
+
+Formats are ranked `lash` > `exe` > `appimage` > `elf`. A `.dmg` is a macOS
+image and is never selected, but it stays in the catalogue so the reason is
+visible instead of the download quietly failing. The winner is fetched from the
+mirror over HTTP, checked against the SHA-256 compiled into the store, and
+written to the NEOFS volume, where `run <file>` or `lash <file>` starts it.
+
+The catalogue is generated at build time by `tools/build_appstore.py` from
+`tools/appstore/apps.json`. A candidate either names a checked-in payload under
+`tools/appstore/payloads/`, or is built by the compiler its descriptor lists (a
+PE32+ `.exe` through mingw-w64 when that is on `PATH`); a candidate with no
+payload is still listed, marked as not installable here. Serve the packages
+with:
+
+```
+make mirror-apps      # http://10.0.2.2:8080/apps/... under QEMU user net
+make run-net          # then: dhcp ; apps ; install hello ; lash hello.lash
+```
+
 ## Layout
 
 ```
@@ -262,7 +295,7 @@ include/        public headers
 src/arch/       GDT, IDT, PIC, PIT, ISRs, ring-3 trampoline
 src/boot/       Multiboot2 entry, linker script, GRUB config
 src/drivers/    ATA, RTC, e1000, keyboard, Bochs VBE graphics
-src/fs/         NEOFS and the driver store
+src/fs/         NEOFS, the driver store and the app store
 src/hal/        CPUID, PCI, device registry
 src/kernel/     kmain, console, syscalls, loaders, shell, lash, processes, win32
 src/lib/        string and SHA-256

@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Build the NiteKernel app store.
+
+Reads tools/appstore/apps.json, resolves every candidate package (a
+checked-in payload under tools/appstore/payloads/, or an artifact built with
+the compiler the descriptor names), and writes:
+
+  <out_dir>/apps.json               host-readable manifest
+  <out_dir>/apps/<file>             the packages the mirror serves
+  <out_dir>/app_store_gen.c         the same index compiled into the kernel
+
+`lash install <name>` matches the name against this index, ranks the
+candidates the machine can run (lash > exe > appimage > elf, never dmg),
+downloads the winner over HTTP, verifies its SHA-256 and stores it on NEOFS.
+
+Usage: build_appstore.py <out_dir>
+"""
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+PAYLOADS = os.path.join(HERE, "appstore", "payloads")
+DESCRIPTOR = os.path.join(HERE, "appstore", "apps.json")
+
+DEFAULT_MIRROR = "http://10.0.2.2:8080"
+FORMATS = ("lash", "exe", "appimage", "elf", "dmg")
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def c_escape(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def resolve_payload(cand, apps_out):
+    """Return (path, note) for one candidate, or (None, reason)."""
+    name = cand["file"]
+
+    if "build" in cand:
+        spec = cand["build"]
+        cc = shutil.which(spec["cc"])
+        if not cc:
+            return None, "%s not found (install it to publish %s)" % (spec["cc"], name)
+        out = os.path.join(apps_out, name)
+        sources = [os.path.join(ROOT, s) for s in spec["sources"]]
+        for src in sources:
+            if not os.path.isfile(src):
+                return None, "missing source %s" % src
+        cmd = [cc] + spec.get("flags", []) + ["-o", out] + sources
+        try:
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError:
+            return None, "build command failed for %s" % name
+        return out, None
+
+    if "payload" in cand:
+        src = os.path.join(PAYLOADS, cand["payload"])
+        if not os.path.isfile(src):
+            return None, "missing payload %s" % src
+        out = os.path.join(apps_out, name)
+        shutil.copy2(src, out)
+        return out, None
+
+    return None, "listed only (no payload published to this mirror)"
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit(__doc__)
+    out_dir = sys.argv[1]
+    apps_out = os.path.join(out_dir, "apps")
+    os.makedirs(apps_out, exist_ok=True)
+
+    if not os.path.isfile(DESCRIPTOR):
+        raise SystemExit("no descriptor at %s" % DESCRIPTOR)
+    with open(DESCRIPTOR) as f:
+        desc = json.load(f)
+
+    mirror = desc.get("mirror", DEFAULT_MIRROR)
+    entries = []
+    for app in desc.get("apps", []):
+        kept = []
+        for cand in app.get("candidates", []):
+            fmt = cand.get("format", "elf")
+            if fmt not in FORMATS:
+                print("  skip %s/%s: unknown format %r" % (app["name"], cand.get("file"), fmt))
+                continue
+            path, note = resolve_payload(cand, apps_out)
+            if path:
+                kept.append({
+                    "format": fmt,
+                    "file": cand["file"],
+                    "url": cand.get("url", ""),
+                    "sha256": sha256_file(path),
+                    "size": os.path.getsize(path),
+                })
+                print("  %-10s %-8s %-16s %8d bytes  %s"
+                      % (app["name"], fmt, cand["file"],
+                         os.path.getsize(path), sha256_file(path)[:16]))
+            else:
+                # Record the candidate anyway: the catalogue then shows what the
+                # upstream site publishes even though the mirror cannot serve it.
+                kept.append({
+                    "format": fmt,
+                    "file": cand["file"],
+                    "url": cand.get("url", ""),
+                    "sha256": "",
+                    "size": 0,
+                })
+                print("  %-10s %-8s %-16s (not installable: %s)"
+                      % (app["name"], fmt, cand["file"], note))
+        if not kept:
+            print("  skip app %s: no candidates" % app["name"])
+            continue
+        entries.append({
+            "name": app["name"],
+            "version": app.get("version", "0"),
+            "summary": app.get("summary", ""),
+            "candidates": kept,
+        })
+
+    manifest = {
+        "version": 1,
+        "format": "nitekernel-app-store",
+        "mirror": mirror,
+        "apps": entries,
+    }
+    with open(os.path.join(out_dir, "apps.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
+
+    gen = os.path.join(out_dir, "app_store_gen.c")
+    with open(gen, "w") as f:
+        f.write("/* Generated by tools/build_appstore.py - do not edit by hand. */\n")
+        f.write("#include <appstore.h>\n\n")
+        f.write('const char g_app_mirror[] = "%s";\n\n' % c_escape(mirror))
+        for i, app in enumerate(entries):
+            f.write("static const struct app_candidate app%d_candidates[] = {\n" % i)
+            for c in app["candidates"]:
+                f.write('    { .file = "%s", .url = "%s", .sha256 = "%s",\n'
+                        % (c_escape(c["file"]), c_escape(c["url"]), c_escape(c["sha256"])))
+                f.write("      .size = %du, .format = APP_FMT_%s },\n"
+                        % (c["size"], c["format"].upper()))
+            f.write("};\n\n")
+
+        f.write("const u32 g_app_count = %du;\n\n" % len(entries))
+        if entries:
+            f.write("const struct app_entry g_app_entries[] = {\n")
+            for i, app in enumerate(entries):
+                f.write('    { .name = "%s", .version = "%s",\n'
+                        % (c_escape(app["name"]), c_escape(app["version"])))
+                f.write('      .summary = "%s",\n' % c_escape(app["summary"]))
+                f.write("      .candidates = app%d_candidates, .candidate_count = %du },\n"
+                        % (i, len(app["candidates"])))
+            f.write("};\n")
+        else:
+            # Keep the symbol valid when the catalogue is empty.
+            f.write("const struct app_entry g_app_entries[1];\n")
+
+    print("  wrote %s (%d app(s))" % (gen, len(entries)))
+    print("  wrote %s" % os.path.join(out_dir, "apps.json"))
+
+
+if __name__ == "__main__":
+    main()

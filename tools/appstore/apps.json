@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "comment": [
+    "App store descriptors. Each candidate is one published artifact of an app.",
+    "The kernel ranks them: lash > exe > appimage > elf, and never selects a",
+    "dmg (a macOS disk image this platform cannot use).",
+    "",
+    "A candidate either points at a checked-in payload, is built by a compiler",
+    "listed in \"build\", or is declared without one: those are recorded in the",
+    "catalogue as published-elsewhere but are not installable from the mirror."
+  ],
+  "apps": [
+    {
+      "name": "hello",
+      "version": "1.0",
+      "summary": "greets from whichever package this machine can run",
+      "candidates": [
+        {
+          "format": "dmg",
+          "file": "hello.dmg",
+          "note": "macOS disk image; listed so the store can skip it"
+        },
+        {
+          "format": "exe",
+          "file": "hello.exe",
+          "build": {
+            "cc": "x86_64-w64-mingw32-gcc",
+            "sources": ["tools/testapps/hello_pe.c"],
+            "flags": ["-nostdlib", "-ffreestanding", "-e", "neo_entry",
+                      "-Wl,--subsystem,console"]
+          }
+        },
+        {
+          "format": "lash",
+          "file": "hello.lash",
+          "payload": "hello.lash"
+        }
+      ]
+    },
+    {
+      "name": "sysinfo",
+      "version": "1.1",
+      "summary": "prints memory, network and uptime through the shell commands",
+      "candidates": [
+        {
+          "format": "lash",
+          "file": "sysinfo.lash",
+          "payload": "sysinfo.lash"
+        }
+      ]
+    },
+    {
+      "name": "winhello",
+      "version": "1.0",
+      "summary": "PE32+ console executable, published only as a Windows build",
+      "candidates": [
+        {
+          "format": "exe",
+          "file": "winhello.exe",
+          "build": {
+            "cc": "x86_64-w64-mingw32-gcc",
+            "sources": ["tools/testapps/real_win.c"],
+            "flags": ["-O2", "-static"]
+          }
+        }
+      ]
+    }
+  ]
+}

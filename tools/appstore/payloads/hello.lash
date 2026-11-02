@@ -1,0 +1,3 @@
+# hello: the app store's preferred package for NiteKernel.
+echo "hello from a .lash package installed by 'lash install hello'"
+echo "shell $SHELL on $HOSTNAME, NiteKernel $NITEKERNEL_VERSION, cwd $PWD"

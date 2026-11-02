@@ -17,7 +17,8 @@ CFLAGS  := -std=gnu11 -O2 -ffreestanding -fno-stack-protector -fno-stack-check \
            -Iinclude -Isrc -g -MMD -MP
 LDFLAGS := -T src/boot/linker.ld -nostdlib -z max-page-size=0x1000 -z noexecstack
 
-C_SRCS   := $(shell find src -name '*.c') $(BUILD)/drivers/driver_store_gen.c
+C_SRCS   := $(shell find src -name '*.c') $(BUILD)/drivers/driver_store_gen.c \
+            $(BUILD)/appstore/app_store_gen.c
 ASM_SRCS := $(shell find src -name '*.asm')
 C_OBJS   := $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))
 ASM_OBJS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRCS))
@@ -27,10 +28,13 @@ DRIVERS  := $(BUILD)/drivers
 DISK     := $(BUILD)/disk.img
 APPS     := $(BUILD)/testapps/apps.img
 STORE_SRC := $(DRIVERS)/driver_store_gen.c
+APPSTORE := $(BUILD)/appstore
+APP_SRC  := $(APPSTORE)/app_store_gen.c
 
-.PHONY: all iso clean run run-apps run-net run-vga run-gui drivers disk mirror test
+.PHONY: all iso clean run run-apps run-net run-vga run-gui drivers disk mirror \
+        mirror-apps appstore test
 
-all: $(ISO) $(DRIVERS)/store.json
+all: $(ISO) $(DRIVERS)/store.json $(APPSTORE)/apps.json
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -65,6 +69,19 @@ $(DRIVERS)/store.json: tools/build_store.py $(wildcard tools/payloads/*)
 $(STORE_SRC): $(DRIVERS)/store.json
 	@test -f $@ || $(PYTHON) tools/build_store.py $(DRIVERS)
 
+# Host-side app store: builds the candidate packages it can (a .lash payload, a
+# PE32+ .exe through mingw when it is on PATH) and indexes them so the kernel
+# can rank the formats and `lash install <app>` from the mirror.
+$(APP_SRC): tools/build_appstore.py tools/appstore/apps.json \
+            $(wildcard tools/appstore/payloads/*)
+	@mkdir -p $(APPSTORE)
+	$(PYTHON) tools/build_appstore.py $(APPSTORE)
+
+$(APPSTORE)/apps.json: $(APP_SRC)
+	@test -f $@ || $(PYTHON) tools/build_appstore.py $(APPSTORE)
+
+appstore: $(APPSTORE)/apps.json
+
 drivers: $(DRIVERS)/store.json
 
 # Blank hard disk for the NEOFS driver database (created once, never wiped).
@@ -78,6 +95,10 @@ disk: $(DISK)
 # Serve the driver store to the guest (10.0.2.2:8080 under QEMU user net).
 mirror: $(DRIVERS)/store.json
 	$(PYTHON) tools/mirror_server.py $(DRIVERS) 8080
+
+# Serve the app packages instead (same port, so run one mirror at a time).
+mirror-apps: $(APPSTORE)/apps.json
+	$(PYTHON) tools/mirror_server.py $(APPSTORE) 8080
 
 # Plain serial console (headless verification)
 run: $(ISO)
@@ -100,9 +121,10 @@ run-net: $(ISO) $(DISK)
 
 # Headless boot test: drives the serial console and checks the output.
 # --apps is only added when the test image has been built.
-test: $(ISO)
+test: $(ISO) $(APPSTORE)/apps.json
 	$(PYTHON) tools/boottest.py --iso $(ISO) \
-	  $(if $(wildcard $(APPS)),--apps $(APPS),)
+	  $(if $(wildcard $(APPS)),--apps $(APPS),) \
+	  $(if $(wildcard $(APPSTORE)/apps.json),--appstore $(APPSTORE),)
 
 # VGA + serial, no window (screenshot-able via monitor)
 run-vga: $(ISO)

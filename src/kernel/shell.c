@@ -11,6 +11,7 @@
 #include <http.h>
 #include <neofs.h>
 #include <store.h>
+#include <appstore.h>
 #include <ata.h>
 #include <blockdev.h>
 #include <lash.h>
@@ -87,6 +88,8 @@ static void cmd_help(void)
     console_printf("  store             list the driver store\n");
     console_printf("  drivers           installed driver database\n");
     console_printf("  install           run first-boot driver acquisition\n");
+    console_printf("  install <app>     install an app package from the app store\n");
+    console_printf("  apps [term]       list or search the app store\n");
     console_printf("  fs                filesystem status\n");
     console_printf("  ls                list files on the NEOFS volume\n");
     console_printf("  cat <file>        print a file\n");
@@ -369,8 +372,20 @@ static void cmd_store(void)
 
 static void cmd_drivers(void) { driverdb_print(); }
 
-static void cmd_install(void)
+/* `install` with no argument keeps its original meaning: first-boot driver
+   acquisition. With an app name it goes through the app store, which ranks the
+   published package formats and installs the best one this machine can run. */
+static void cmd_install(int argc, char **argv)
 {
+    if (argc > 1) {
+        if (!strcmp(argv[1], "--list") || !strcmp(argv[1], "list")) {
+            app_print_catalog(argc > 2 ? argv[2] : NULL);
+            return;
+        }
+        app_install(argv[1]);
+        return;
+    }
+
     if (!net_ready()) { console_printf("no network; run 'dhcp' first\n"); return; }
     struct hw_profile *p = device_profile();
     int n = store_acquire(p);
@@ -488,7 +503,8 @@ int shell_run_command(int argc, char **argv)
     else if (!strcmp(c, "fetch")) cmd_fetch(argc > 1 ? argv[1] : NULL);
     else if (!strcmp(c, "store")) cmd_store();
     else if (!strcmp(c, "drivers")) cmd_drivers();
-    else if (!strcmp(c, "install")) cmd_install();
+    else if (!strcmp(c, "install")) cmd_install(argc, argv);
+    else if (!strcmp(c, "apps")) app_print_catalog(argc > 1 ? argv[1] : NULL);
     else if (!strcmp(c, "fs")) cmd_fs();
     else if (!strcmp(c, "ls") || !strcmp(c, "dir")) cmd_ls();
     else if (!strcmp(c, "cat")) cmd_cat(argc > 1 ? argv[1] : NULL);
@@ -547,7 +563,7 @@ int shell_run_command(int argc, char **argv)
 static const char *command_names[] = {
     "help", "?", "report", "cpu", "mem", "pci", "gfx", "rtc", "time", "date",
     "ata", "lsblk", "net", "dhcp", "ifconfig", "ping", "dns", "fetch",
-    "store", "drivers", "install", "fs", "ls", "dir", "cat", "rm", "del",
+    "store", "drivers", "install", "apps", "fs", "ls", "dir", "cat", "rm", "del",
     "history", "sha256sum", "sha256",
     "write", "echo", "uptime", "clear", "reboot", "halt", "poweroff",
     "run", "exec", "lash", "bash", "sh", "trace", NULL

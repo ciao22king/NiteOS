@@ -17,6 +17,7 @@ import os
 import re
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -113,12 +114,34 @@ def strip_ansi(s):
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", s)
 
 
+def start_mirror(directory, port=8080):
+    """Serve the app store so the guest can `lash install` from it."""
+    if not os.path.isdir(directory):
+        raise SystemExit("no such app store directory: %s" % directory)
+    proc = subprocess.Popen(
+        [sys.executable, os.path.join(ROOT, "tools", "mirror_server.py"),
+         directory, str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                print("OK    app mirror on http://127.0.0.1:%d" % port)
+                return proc
+        except OSError:
+            time.sleep(0.1)
+    proc.terminate()
+    raise SystemExit("the app mirror did not come up on port %d" % port)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--iso", default=os.path.join(BUILD, "nitekernel.iso"))
     ap.add_argument("--apps", default=None,
                     help="NEOFS test image (from tools/build_testapps.py)")
+    ap.add_argument("--appstore", default=None,
+                    help="app store directory to serve over HTTP as the mirror")
     ap.add_argument("--net", choices=["none", "user"], default="none",
                     help="none is offline and fast; user exercises DHCP + "
                          "driver acquisition")
@@ -146,6 +169,13 @@ def main():
         fresh = os.path.join(BUILD, "boottest-apps.img")
         shutil.copyfile(args.apps, fresh)
         args.apps = fresh
+
+    # `lash install` needs both a volume to install into and a reachable
+    # mirror, so an app store test always runs with user-mode networking.
+    mirror = None
+    if args.appstore:
+        args.net = "user"
+        mirror = start_mirror(args.appstore, 8080)
 
     boot = Boot(args)
     failures = []
@@ -235,6 +265,29 @@ def main():
             command("run real_win.exe", "real mingw PE",
                     "real mingw .exe with imports bound")
 
+        # --- app store: format ranking, download, verified install ---
+        if args.appstore:
+            command("apps hello", "macOS only, never selected",
+                    "the catalogue lists the format it refuses to run")
+            command("install hello", "picked hello.lash (lash,",
+                    "install ranks .lash above .exe and never picks the .dmg")
+
+            # sysinfo is not on the test volume, so this one really downloads.
+            with open(os.path.join(args.appstore, "apps", "sysinfo.lash"), "rb") as f:
+                digest = hashlib.sha256(f.read()).hexdigest()
+            command("install sysinfo", "installed sysinfo.lash",
+                    "install downloads a package and stores it")
+            command("sha256sum sysinfo.lash", digest,
+                    "the stored package matches the mirror byte for byte")
+            command("lash sysinfo.lash", "sysinfo: NiteKernel",
+                    "the installed package runs")
+            command("install sysinfo", "already installed",
+                    "installing the same app twice is a no-op")
+            command("install winhello",
+                    lambda t: ("picked winhello.exe (exe" in t) or
+                               ("publishes no package this machine can run" in t),
+                    "a Windows-only app installs, or says why it cannot")
+
         if "*** KERNEL PANIC ***" in boot.text:
             fail("the kernel panicked during the run")
 
@@ -251,6 +304,12 @@ def main():
         with open(logpath, "w") as f:
             f.write(strip_ansi(boot.text))
         boot.close()
+        if mirror is not None:
+            mirror.terminate()
+            try:
+                mirror.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                mirror.kill()
 
 
 if __name__ == "__main__":

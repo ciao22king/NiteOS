@@ -1,0 +1,6 @@
+# sysinfo: a small app that drives the shell's own commands, so it works in a
+# pipeline and in a script alike.
+echo "sysinfo: NiteKernel $NITEKERNEL_VERSION on $HOSTNAME"
+mem
+net
+uptime
